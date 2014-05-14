@@ -67,8 +67,6 @@ public final class OpenSslEngine extends SSLEngine {
     private static final int MAX_CIPHERTEXT_LENGTH = MAX_COMPRESSED_LENGTH + 1024;
     private static final int MAX_ENCRYPTED_PACKET = MAX_CIPHERTEXT_LENGTH + 5 + 20 + 256;
 
-    private static final String SSL_IGNORABLE_ERROR_PREFIX = "error:00000000:";
-
     private static final AtomicIntegerFieldUpdater<OpenSslEngine> DESTROYED_UPDATER =
             AtomicIntegerFieldUpdater.newUpdater(OpenSslEngine.class, "destroyed");
 
@@ -95,10 +93,10 @@ public final class OpenSslEngine extends SSLEngine {
 
     private int lastPrimingReadResult;
 
-    private final OpenSslBufferPool bufPool;
+    private final SslBufferPool bufPool;
     private SSLSession session;
 
-    public OpenSslEngine(long sslContext, OpenSslBufferPool bufPool) {
+    public OpenSslEngine(long sslContext, SslBufferPool bufPool) {
         OpenSsl.ensureAvailability();
         if (sslContext == 0) {
             throw new NullPointerException("sslContext");
@@ -129,7 +127,9 @@ public final class OpenSslEngine extends SSLEngine {
      * Calling this function with src.remaining == 0 is undefined.
      */
     private int writePlaintextData(final ByteBuffer src) {
-        final ByteBuffer buf = bufPool.acquire();
+        final ByteBuffer buf = bufPool.acquireBuffer();
+        assert buf.isDirect();
+
         final long addr = Buffer.address(buf);
         try {
             int position = src.position();
@@ -152,7 +152,7 @@ public final class OpenSslEngine extends SSLEngine {
                 throw new IllegalStateException("SSL.writeToSSL() returned a non-positive value: " + sslWrote);
             }
         } finally {
-            bufPool.release(buf);
+            bufPool.releaseBuffer(buf);
         }
     }
 
@@ -160,7 +160,9 @@ public final class OpenSslEngine extends SSLEngine {
      * Write encrypted data to the OpenSSL network BIO
      */
     private int writeEncryptedData(final ByteBuffer src) {
-        final ByteBuffer buf = bufPool.acquire();
+        final ByteBuffer buf = bufPool.acquireBuffer();
+        assert buf.isDirect();
+
         final long addr = Buffer.address(buf);
         try {
             int position = src.position();
@@ -181,7 +183,7 @@ public final class OpenSslEngine extends SSLEngine {
                 return 0;
             }
         } finally {
-            bufPool.release(buf);
+            bufPool.releaseBuffer(buf);
         }
     }
 
@@ -189,7 +191,9 @@ public final class OpenSslEngine extends SSLEngine {
      * Read plaintext data from the OpenSSL internal BIO
      */
     private int readPlaintextData(final ByteBuffer dst) {
-        final ByteBuffer buf = bufPool.acquire();
+        final ByteBuffer buf = bufPool.acquireBuffer();
+        assert buf.isDirect();
+
         final long addr = Buffer.address(buf);
         try {
             final int len = Math.min(buf.capacity(), dst.capacity());
@@ -203,7 +207,7 @@ public final class OpenSslEngine extends SSLEngine {
                 return 0;
             }
         } finally {
-            bufPool.release(buf);
+            bufPool.releaseBuffer(buf);
         }
     }
 
@@ -211,7 +215,9 @@ public final class OpenSslEngine extends SSLEngine {
      * Read encrypted data from the OpenSSL network BIO
      */
     private int readEncryptedData(final ByteBuffer dst, final int pending) {
-        final ByteBuffer buf = bufPool.acquire();
+        final ByteBuffer buf = bufPool.acquireBuffer();
+        assert buf.isDirect();
+
         final long addr = Buffer.address(buf);
         try {
             if (pending > buf.capacity()) {
@@ -228,7 +234,7 @@ public final class OpenSslEngine extends SSLEngine {
                 return 0;
             }
         } finally {
-            bufPool.release(buf);
+            bufPool.releaseBuffer(buf);
         }
     }
 
@@ -412,7 +418,7 @@ public final class OpenSslEngine extends SSLEngine {
 
         // Check for OpenSSL errors caused by the priming read
         String error = SSL.getLastError();
-        if (error != null && !error.startsWith(SSL_IGNORABLE_ERROR_PREFIX)) {
+        if (error != null && !error.startsWith(OpenSsl.IGNORABLE_ERROR_PREFIX)) {
             if (logger.isInfoEnabled()) {
                 logger.info(
                         "SSL_read failed: primingReadResult: " + lastPrimingReadResult +

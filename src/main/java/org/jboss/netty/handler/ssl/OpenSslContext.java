@@ -24,6 +24,7 @@ import org.jboss.netty.channel.Channels;
 
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -34,7 +35,7 @@ import java.util.List;
  * <pre>
  * public class MyChannelPipelineFactory extends {@link ChannelPipelineFactory} {
  *
- *     private final {@link OpenSslServerContext} sslEngineFactory = ...;
+ *     private final {@link OpenSslContext} sslEngineFactory = ...;
  *
  *     public {@link ChannelPipeline} getPipeline() {
  *         {@link ChannelPipeline} p = {@link Channels#pipeline() Channels.pipeline()};
@@ -46,103 +47,109 @@ import java.util.List;
  * </pre>
  *
  */
-public final class OpenSslServerContext {
+public final class OpenSslContext extends SslContext {
+
+    private static final List<String> DEFAULT_CIPHERS;
+
+    static {
+        List<String> ciphers = new ArrayList<String>();
+        // XXX: Make sure to sync this list with JdkSslEngineFactory.
+        Collections.addAll(
+                ciphers,
+                "ECDHE-RSA-AES128-GCM-SHA256",
+                "ECDHE-RSA-RC4-SHA",
+                "ECDHE-RSA-AES128-SHA",
+                "ECDHE-RSA-AES256-SHA",
+                "AES128-GCM-SHA256",
+                "RC4-SHA",
+                "RC4-MD5",
+                "AES128-SHA",
+                "AES256-SHA",
+                "DES-CBC3-SHA");
+        DEFAULT_CIPHERS = Collections.unmodifiableList(ciphers);
+    }
 
     private final long aprPool;
-    private final OpenSslBufferPool bufPool;
-    private final boolean destroyAprPool;
+    private final SslBufferPool bufPool;
 
-    private final List<String> cipherSpec = new ArrayList<String>();
-    private final List<String> unmodifiableCipherSpec = Collections.unmodifiableList(cipherSpec);
-    private final String cipherSpecText;
+    private final List<String> ciphers = new ArrayList<String>();
+    private final List<String> unmodifiableCiphers = Collections.unmodifiableList(ciphers);
     private final long sessionCacheSize;
     private final long sessionTimeout;
-    private final String nextProtos;
+    private final List<String> nextProtocols = new ArrayList<String>();
+    private final List<String> unmodifiableNextProtocols = Collections.unmodifiableList(nextProtocols);
 
     /** The OpenSSL SSL_CTX object */
     private final long ctx;
     private final OpenSslSessionStats stats;
 
-    public OpenSslServerContext(
-            long aprPool, OpenSslBufferPool bufPool,
-            String certPath, String keyPath, String keyPassword,
-            String caPath, String nextProtos, Iterable<String> ciphers,
+    public OpenSslContext(
+            SslBufferPool bufPool,
+            String certChainPath, String keyPath, String keyPassword,
+            Iterable<String> ciphers, Iterable<String> nextProtocols,
             long sessionCacheSize, long sessionTimeout) throws SSLException {
 
         OpenSsl.ensureAvailability();
 
-        if (certPath == null) {
-            throw new NullPointerException("certPath");
+        if (certChainPath == null) {
+            throw new NullPointerException("certChainPath");
         }
-        if (certPath.length() == 0) {
-            throw new IllegalArgumentException("certPath is empty.");
+        if (!new File(certChainPath).isFile()) {
+            throw new IllegalArgumentException("certChainPath is not a file: " + certChainPath);
         }
         if (keyPath == null) {
             throw new NullPointerException("keyPath");
         }
-        if (keyPath.length() == 0) {
-            throw new IllegalArgumentException("keyPath is empty.");
+        if (!new File(keyPath).isFile()) {
+            throw new IllegalArgumentException("keyPath is not a file: " + keyPath);
         }
         if (ciphers == null) {
-            throw new NullPointerException("ciphers");
+            ciphers = DEFAULT_CIPHERS;
         }
 
         if (keyPassword == null) {
             keyPassword = "";
         }
-        if (caPath == null) {
-            caPath = "";
-        }
-        if (nextProtos == null) {
-            nextProtos = "";
+        if (nextProtocols == null) {
+            nextProtocols = Collections.emptyList();
         }
 
         for (String c: ciphers) {
             if (c == null) {
                 break;
             }
-            cipherSpec.add(c);
+            this.ciphers.add(c);
         }
 
-        this.nextProtos = nextProtos;
-
-        // Convert the cipher list into a colon-separated string.
-        StringBuilder cipherSpecBuf = new StringBuilder();
-        for (String c: cipherSpec) {
-            cipherSpecBuf.append(c);
-            cipherSpecBuf.append(':');
-        }
-        cipherSpecBuf.setLength(cipherSpecBuf.length() - 1);
-        cipherSpecText = cipherSpecBuf.toString();
-
-        // Allocate a new APR pool if necessary.
-        if (aprPool == 0) {
-            aprPool = Pool.create(0);
-            destroyAprPool = true;
-        } else {
-            destroyAprPool = false;
+        for (String p: nextProtocols) {
+            if (p == null) {
+                break;
+            }
+            this.nextProtocols.add(p);
         }
 
-        // Allocate a new OpenSSL buffer pool if necessary.
+        // Allocate a new APR pool.
+        aprPool = Pool.create(0);
+
+        // Allocate a new direct buffer pool if necessary.
         boolean success = false;
         try {
             if (bufPool == null) {
-                bufPool = new OpenSslBufferPool(Runtime.getRuntime().availableProcessors() * 2);
+                bufPool = new SslBufferPool(true);
             }
             success = true;
         } finally {
-            if (!success && destroyAprPool) {
+            if (!success) {
                 Pool.destroy(aprPool);
             }
         }
 
-        this.aprPool = aprPool;
         this.bufPool = bufPool;
 
         // Create a new SSL_CTX and configure it.
         success = false;
         try {
-            synchronized (OpenSslServerContext.class) {
+            synchronized (OpenSslContext.class) {
                 try {
                     ctx = SSLContext.make(aprPool, SSL.SSL_PROTOCOL_ALL, SSL.SSL_MODE_SERVER);
                 } catch (Exception e) {
@@ -158,11 +165,19 @@ public final class OpenSslServerContext {
 
                 /* List the ciphers that the client is permitted to negotiate. */
                 try {
-                    SSLContext.setCipherSuite(ctx, cipherSpecText);
+                    // Convert the cipher list into a colon-separated string.
+                    StringBuilder cipherBuf = new StringBuilder();
+                    for (String c: this.ciphers) {
+                        cipherBuf.append(c);
+                        cipherBuf.append(':');
+                    }
+                    cipherBuf.setLength(cipherBuf.length() - 1);
+
+                    SSLContext.setCipherSuite(ctx, cipherBuf.toString());
                 } catch (SSLException e) {
                     throw e;
                 } catch (Exception e) {
-                    throw new SSLException("failed to set cipher suite: " + cipherSpecText, e);
+                    throw new SSLException("failed to set cipher suite: " + this.ciphers, e);
                 }
 
                 /* Set certificate verification policy. */
@@ -171,30 +186,36 @@ public final class OpenSslServerContext {
                 /* Load the certificate file and private key. */
                 try {
                     if (!SSLContext.setCertificate(
-                            ctx, certPath, keyPath, keyPassword, SSL.SSL_AIDX_RSA)) {
-                        throw new SSLException(
-                                "failed to set certificate: " + certPath + " (" + SSL.getLastError() + ')');
+                            ctx, certChainPath, keyPath, keyPassword, SSL.SSL_AIDX_RSA)) {
+                        throw new SSLException("failed to set certificate: " +
+                                certChainPath + " and " + keyPath + " (" + SSL.getLastError() + ')');
                     }
                 } catch (SSLException e) {
                     throw e;
                 } catch (Exception e) {
-                    throw new SSLException("failed to set certificate: " + certPath, e);
+                    throw new SSLException("failed to set certificate: " + certChainPath + " and " + keyPath, e);
                 }
 
-                /* Load certificate chain file, if specified */
-                if (caPath.length() != 0) {
-                    /* If named same as cert file, we must skip the first cert since it was loaded above. */
-                    boolean skipFirstCert = certPath.equals(caPath);
-
-                    if (!SSLContext.setCertificateChainFile(ctx, caPath, skipFirstCert)) {
+                /* Load the certificate chain. We must skip the first cert since it was loaded above. */
+                if (!SSLContext.setCertificateChainFile(ctx, certChainPath, true)) {
+                    String error = SSL.getLastError();
+                    if (!error.startsWith(OpenSsl.IGNORABLE_ERROR_PREFIX)) {
                         throw new SSLException(
-                                "failed to set certificate chain: " + caPath + " (" + SSL.getLastError() + ')');
+                                "failed to set certificate chain: " + certChainPath + " (" + SSL.getLastError() + ')');
                     }
                 }
 
                 /* Set next protocols for next protocol negotiation extension, if specified */
-                if (nextProtos.length() != 0) {
-                    SSLContext.setNextProtos(ctx, nextProtos);
+                if (!this.nextProtocols.isEmpty()) {
+                    // Convert the protocol list into a comma-separated string.
+                    StringBuilder nextProtocolBuf = new StringBuilder();
+                    for (String p: this.nextProtocols) {
+                        nextProtocolBuf.append(p);
+                        nextProtocolBuf.append(',');
+                    }
+                    nextProtocolBuf.setLength(nextProtocolBuf.length() - 1);
+
+                    SSLContext.setNextProtos(ctx, nextProtocolBuf.toString());
                 }
 
                 /* Set session cache size, if specified */
@@ -229,28 +250,63 @@ public final class OpenSslServerContext {
         stats = new OpenSslSessionStats(ctx);
     }
 
-    public List<String> cipherSpec() {
-        return unmodifiableCipherSpec;
+    @Override
+    public boolean isClient() {
+        return false;
     }
 
-    public String cipherSpecText() {
-        return cipherSpecText;
+    @Override
+    public List<String> cipherSuites() {
+        return unmodifiableCiphers;
     }
 
-    public String nextProtos() {
-        return nextProtos;
+    @Override
+    public long sessionCacheSize() {
+        return sessionCacheSize;
     }
 
-    public int sessionCacheSize() {
-        return sessionCacheSize > Integer.MAX_VALUE? Integer.MAX_VALUE : (int) sessionCacheSize;
+    @Override
+    public long sessionTimeout() {
+        return sessionTimeout;
     }
 
-    public int sessionTimeout() {
-        return sessionTimeout > Integer.MAX_VALUE? Integer.MAX_VALUE : (int) sessionTimeout;
+    @Override
+    public ApplicationProtocolSelector nextProtocolSelector() {
+        return null;
+    }
+
+    @Override
+    public List<String> nextProtocols() {
+        return unmodifiableNextProtocols;
+    }
+
+    /**
+     * Returns the {@code SSL_CTX} object of this factory.
+     */
+    public long context() {
+        return ctx;
     }
 
     public OpenSslSessionStats stats() {
         return stats;
+    }
+
+    @Override
+    public SslBufferPool bufPool() {
+        return bufPool;
+    }
+
+    /**
+     * Returns a new server-side {@link SSLEngine} with the current configuration.
+     */
+    @Override
+    public SSLEngine newEngine() {
+        return new OpenSslEngine(ctx, bufPool);
+    }
+
+    @Override
+    public SslHandler newHandler() {
+        return new SslHandler(newEngine(), bufPool);
     }
 
     public void setTicketKeys(byte[] keys) {
@@ -261,7 +317,7 @@ public final class OpenSslServerContext {
     @SuppressWarnings("FinalizeDeclaration")
     protected void finalize() throws Throwable {
         super.finalize();
-        synchronized (OpenSslServerContext.class) {
+        synchronized (OpenSslContext.class) {
             if (ctx != 0) {
                 SSLContext.free(ctx);
             }
@@ -271,15 +327,8 @@ public final class OpenSslServerContext {
     }
 
     private void destroyPools() {
-        if (destroyAprPool && aprPool != 0) {
+        if (aprPool != 0) {
             Pool.destroy(aprPool);
         }
-    }
-
-    /**
-     * Returns a new server-side {@link SSLEngine} with the current configuration.
-     */
-    public SSLEngine newEngine() {
-        return new OpenSslEngine(ctx, bufPool);
     }
 }

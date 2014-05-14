@@ -27,7 +27,6 @@ import org.jboss.netty.channel.ChannelStateEvent;
 import org.jboss.netty.channel.ExceptionEvent;
 import org.jboss.netty.channel.MessageEvent;
 import org.jboss.netty.channel.SimpleChannelUpstreamHandler;
-import org.jboss.netty.handler.ssl.AbstractSocketSslEchoTest.SSLEngineFactory;
 import org.jboss.netty.logging.InternalLogger;
 import org.jboss.netty.logging.InternalLoggerFactory;
 import org.jboss.netty.util.TestUtil;
@@ -36,7 +35,6 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
 
-import javax.net.ssl.SSLEngine;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.Collection;
@@ -52,9 +50,9 @@ public abstract class AbstractSocketSslGreetingTest {
     static final InternalLogger logger =
             InternalLoggerFactory.getInstance(AbstractSocketSslGreetingTest.class);
 
-    @Parameters(name = "{index}: serverEngine = {0}, clientEngine = {1}")
-    public static Collection<SSLEngineFactory[]> engines() throws Exception {
-        return AbstractSocketSslEchoTest.engines();
+    @Parameters(name = "{index}: serverCtx = {0}, clientCtx = {1}")
+    public static Collection<SslContext[]> sslContexts() throws Exception {
+        return AbstractSocketSslEchoTest.sslContexts();
     }
 
     private final ChannelBuffer greeting = ChannelBuffers.wrappedBuffer(new byte[] {'a'});
@@ -62,13 +60,12 @@ public abstract class AbstractSocketSslGreetingTest {
     protected abstract ChannelFactory newServerSocketChannelFactory(Executor executor);
     protected abstract ChannelFactory newClientSocketChannelFactory(Executor executor);
 
-    private final SSLEngineFactory serverEngineFactory;
-    private final SSLEngineFactory clientEngineFactory;
+    private final SslContext serverCtx;
+    private final SslContext clientCtx;
 
-    protected AbstractSocketSslGreetingTest(
-            SSLEngineFactory serverEngineFactory, SSLEngineFactory clientEngineFactory) {
-        this.serverEngineFactory = serverEngineFactory;
-        this.clientEngineFactory = clientEngineFactory;
+    protected AbstractSocketSslGreetingTest(SslContext serverCtx, SslContext clientCtx) {
+        this.serverCtx = serverCtx;
+        this.clientCtx = clientCtx;
     }
 
     @Test
@@ -79,18 +76,13 @@ public abstract class AbstractSocketSslGreetingTest {
         ServerHandler sh = new ServerHandler();
         ClientHandler ch = new ClientHandler();
 
-        SSLEngine sse = serverEngineFactory.newEngine();
-        SSLEngine cse = clientEngineFactory.newEngine();
-        sse.setUseClientMode(false);
-        cse.setUseClientMode(true);
-
         // Workaround for blocking I/O transport write-write dead lock.
         sb.setOption("receiveBufferSize", 1048576);
         sb.setOption("receiveBufferSize", 1048576);
 
-        sb.getPipeline().addFirst("ssl", new SslHandler(sse));
+        sb.getPipeline().addFirst("ssl", serverCtx.newHandler());
         sb.getPipeline().addLast("handler", sh);
-        cb.getPipeline().addFirst("ssl", new SslHandler(cse));
+        cb.getPipeline().addFirst("ssl", clientCtx.newHandler());
         cb.getPipeline().addLast("handler", ch);
 
         Channel sc = sb.bind(new InetSocketAddress(0));

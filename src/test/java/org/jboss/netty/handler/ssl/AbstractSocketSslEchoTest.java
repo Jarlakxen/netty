@@ -27,7 +27,6 @@ import org.jboss.netty.channel.ChannelStateEvent;
 import org.jboss.netty.channel.ExceptionEvent;
 import org.jboss.netty.channel.MessageEvent;
 import org.jboss.netty.channel.SimpleChannelUpstreamHandler;
-import org.jboss.netty.example.securechat.SecureChatSslContextFactory;
 import org.jboss.netty.handler.execution.ExecutionHandler;
 import org.jboss.netty.handler.execution.OrderedMemoryAwareThreadPoolExecutor;
 import org.jboss.netty.logging.InternalLogger;
@@ -38,7 +37,6 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
 
-import javax.net.ssl.SSLEngine;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -55,49 +53,33 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.*;
 
+// TODO: Merge all subclasses and test parameters using Parameterized.
 @RunWith(Parameterized.class)
 public abstract class AbstractSocketSslEchoTest {
-    static final InternalLogger logger =
-        InternalLoggerFactory.getInstance(AbstractSocketSslEchoTest.class);
+    static final InternalLogger logger = InternalLoggerFactory.getInstance(AbstractSocketSslEchoTest.class);
 
     private static final Random random = new Random();
     static final byte[] data = new byte[1048576];
 
+    private static final String CERT_PATH;
+    private static final String KEY_PATH;
+
     static {
         random.nextBytes(data);
-    }
 
-    @Parameters(name = "{index}: serverEngine = {0}, clientEngine = {1}")
-    public static Collection<SSLEngineFactory[]> engines() throws Exception {
-        List<SSLEngineFactory[]> params = new ArrayList<SSLEngineFactory[]>();
-
-        List<SSLEngineFactory> serverEngines = new ArrayList<SSLEngineFactory>();
-        serverEngines.add(new SSLEngineFactory("JDK") {
-            @Override
-            public SSLEngine newEngine() {
-                return SecureChatSslContextFactory.getServerContext().createSSLEngine();
-            }
-        });
-
-        List<SSLEngineFactory> clientEngines = new ArrayList<SSLEngineFactory>();
-        clientEngines.add(new SSLEngineFactory("JDK") {
-            @Override
-            public SSLEngine newEngine() {
-                return SecureChatSslContextFactory.getClientContext().createSSLEngine();
-            }
-        });
-
-        boolean hasOpenSsl = OpenSsl.isAvailable();
-        if (hasOpenSsl) {
-            final String certPath = File.createTempFile("ssl_test_", ".crt").getAbsolutePath();
+        // Copy the self-signed certificate and its private key into a temporary directory.
+        final String certPath;
+        final String keyPath;
+        try {
+            certPath = File.createTempFile("netty_ssl_test_", ".crt").getAbsolutePath();
             new File(certPath).deleteOnExit();
-            final String keyPath = File.createTempFile("ssl_test_", ".pem").getAbsolutePath();
+            keyPath = File.createTempFile("netty_ssl_test_", ".pem").getAbsolutePath();
             new File(keyPath).deleteOnExit();
 
             ClassLoader cl = AbstractSocketSslEchoTest.class.getClassLoader();
             FileOutputStream certOut = new FileOutputStream(certPath);
             InputStream certIn = cl.getResourceAsStream("openssl.crt");
-            for (;;) {
+            for (; ; ) {
                 int b = certIn.read();
                 if (b < 0) {
                     break;
@@ -108,7 +90,7 @@ public abstract class AbstractSocketSslEchoTest {
 
             FileOutputStream keyOut = new FileOutputStream(keyPath);
             InputStream keyIn = cl.getResourceAsStream("openssl.pem");
-            for (;;) {
+            for (; ; ) {
                 int b = keyIn.read();
                 if (b < 0) {
                     break;
@@ -116,60 +98,50 @@ public abstract class AbstractSocketSslEchoTest {
                 keyOut.write(b);
             }
             keyOut.close();
+        } catch (Exception e) {
+            throw new Error("failed to copy the self-signed certificate", e);
+        }
 
-            final OpenSslContextBuilder ctxBuilder = new OpenSslContextBuilder();
-            final OpenSslServerContext ctx = ctxBuilder.certPath(certPath).keyPath(keyPath).newServerContext();
+        CERT_PATH = certPath;
+        KEY_PATH = keyPath;
+    }
 
-            serverEngines.add(new SSLEngineFactory("TCNative") {
-                @Override
-                public SSLEngine newEngine() throws Exception {
-                    return ctx.newEngine();
-                }
-            });
+    @Parameters(name = "{index}: serverCtx = {0}, clientCtx = {1}")
+    public static Collection<SslContext[]> sslContexts() throws Exception {
+        // Populate the permutations.
+        List<SslContext[]> params = new ArrayList<SslContext[]>();
+
+        List<SslContext> serverContexts = new ArrayList<SslContext>();
+        serverContexts.add(new JdkSslContext(null, CERT_PATH, KEY_PATH, null, null, null, 0, 0));
+
+        List<SslContext> clientContexts = new ArrayList<SslContext>();
+        clientContexts.add(new JdkSslContext(null, CERT_PATH, null, null, null, 0, 0));
+
+        boolean hasOpenSsl = OpenSsl.isAvailable();
+        if (hasOpenSsl) {
+            serverContexts.add(new OpenSslContext(null, CERT_PATH, KEY_PATH, null, null, null, 0, 0));
 
             // TODO: Client mode is not supported yet.
-            /*
-            clientEngines.add(new SSLEngineFactory("TCNative") {
-                public SSLEngine newEngine() {
-                    return new OpenSSLEngine(contextHolder, sslBufferPool);
-                }
-            });
-            */
+            // clientContexts.add(new OpenSslContext(null, CERT_PATH, null, null, null, 0, 0));
         } else {
             logger.warn("OpenSSL is unavailable and thus will not be tested.", OpenSsl.unavailabilityCause());
         }
 
-        for (SSLEngineFactory sf: serverEngines) {
-            for (SSLEngineFactory cf: clientEngines) {
-                params.add(new SSLEngineFactory[] { sf, cf });
+        for (SslContext sctx: serverContexts) {
+            for (SslContext cctx: clientContexts) {
+                params.add(new SslContext[] { sctx, cctx });
             }
         }
 
         return params;
     }
 
-    protected abstract static class SSLEngineFactory {
+    private final SslContext serverCtx;
+    private final SslContext clientCtx;
 
-        private final String name;
-
-        SSLEngineFactory(String name) {
-            this.name = name;
-        }
-
-        public abstract SSLEngine newEngine() throws Exception;
-
-        @Override
-        public String toString() {
-            return name;
-        }
-    }
-
-    private final SSLEngineFactory serverEngineFactory;
-    private final SSLEngineFactory clientEngineFactory;
-
-    protected AbstractSocketSslEchoTest(SSLEngineFactory serverEngineFactory, SSLEngineFactory clientEngineFactory) {
-        this.serverEngineFactory = serverEngineFactory;
-        this.clientEngineFactory = clientEngineFactory;
+    protected AbstractSocketSslEchoTest(SslContext serverCtx, SslContext clientCtx) {
+        this.serverCtx = serverCtx;
+        this.clientCtx = clientCtx;
     }
 
     protected abstract ChannelFactory newServerSocketChannelFactory(Executor executor);
@@ -209,28 +181,25 @@ public abstract class AbstractSocketSslEchoTest {
         EchoHandler sh = new EchoHandler(true);
         EchoHandler ch = new EchoHandler(false);
 
-        SSLEngine sse = serverEngineFactory.newEngine();
-        SSLEngine cse = clientEngineFactory.newEngine();
-        sse.setUseClientMode(false);
-        cse.setUseClientMode(true);
-
         // Workaround for blocking I/O transport write-write dead lock.
         sb.setOption("receiveBufferSize", 1048576);
         sb.setOption("receiveBufferSize", 1048576);
 
         // Configure the server pipeline.
         if (serverUsesDelegatedTaskExecutor) {
-            sb.getPipeline().addFirst("ssl", new SslHandler(sse, delegatedTaskExecutor));
+            sb.getPipeline().addFirst(
+                    "ssl", new SslHandler(serverCtx.newEngine(), serverCtx.bufPool(), delegatedTaskExecutor));
         } else {
-            sb.getPipeline().addFirst("ssl", new SslHandler(sse));
+            sb.getPipeline().addFirst("ssl", serverCtx.newHandler());
         }
         sb.getPipeline().addLast("handler", sh);
 
         // Configure the client pipeline.
         if (clientUsesDelegatedTaskExecutor) {
-            cb.getPipeline().addFirst("ssl", new SslHandler(cse, delegatedTaskExecutor));
+            cb.getPipeline().addFirst(
+                    "ssl", new SslHandler(clientCtx.newEngine(), clientCtx.bufPool(), delegatedTaskExecutor));
         } else {
-            cb.getPipeline().addFirst("ssl", new SslHandler(cse));
+            cb.getPipeline().addFirst("ssl", clientCtx.newHandler());
         }
         cb.getPipeline().addLast("handler", ch);
 

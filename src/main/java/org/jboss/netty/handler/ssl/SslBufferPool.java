@@ -38,6 +38,7 @@ public class SslBufferPool {
     private static final int MAX_PACKET_SIZE = 16665 + 2048;
     private static final int DEFAULT_POOL_SIZE = MAX_PACKET_SIZE * 1024;
 
+    private final boolean offHeap;
     private final ByteBuffer[] pool;
     private final int maxBufferCount;
     private int index;
@@ -51,11 +52,28 @@ public class SslBufferPool {
     }
 
     /**
+     * Creates a new buffer pool whose size is {@code 18113536}, which can
+     * hold {@code 1024} buffers.
+     */
+    public SslBufferPool(boolean offHeap) {
+        this(DEFAULT_POOL_SIZE, offHeap);
+    }
+
+    /**
      * Creates a new buffer pool.
      *
      * @param maxPoolSize the maximum number of bytes that this pool can hold
      */
     public SslBufferPool(int maxPoolSize) {
+        this(maxPoolSize, false);
+    }
+
+    /**
+     * Creates a new buffer pool.
+     *
+     * @param maxPoolSize the maximum number of bytes that this pool can hold
+     */
+    public SslBufferPool(int maxPoolSize, boolean offHeap) {
         if (maxPoolSize <= 0) {
             throw new IllegalArgumentException("maxPoolSize: " + maxPoolSize);
         }
@@ -67,6 +85,7 @@ public class SslBufferPool {
 
         pool = new ByteBuffer[maxBufferCount];
         this.maxBufferCount = maxBufferCount;
+        this.offHeap = offHeap;
     }
 
     /**
@@ -94,7 +113,11 @@ public class SslBufferPool {
      */
     public synchronized ByteBuffer acquireBuffer() {
         if (index == 0) {
-            return ByteBuffer.allocate(MAX_PACKET_SIZE);
+            if (offHeap) {
+                return ByteBuffer.allocateDirect(MAX_PACKET_SIZE);
+            } else {
+                return ByteBuffer.allocate(MAX_PACKET_SIZE);
+            }
         } else {
             return (ByteBuffer) pool[-- index].clear();
         }

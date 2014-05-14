@@ -23,8 +23,8 @@ import java.util.concurrent.Executor;
 
 public class NioOioSocketSslEchoTest extends AbstractSocketSslEchoTest {
 
-    public NioOioSocketSslEchoTest(SSLEngineFactory serverEngineFactory, SSLEngineFactory clientEngineFactory) {
-        super(serverEngineFactory, clientEngineFactory);
+    public NioOioSocketSslEchoTest(SslContext serverCtx, SslContext clientCtx) {
+        super(serverCtx, clientCtx);
     }
 
     @Override

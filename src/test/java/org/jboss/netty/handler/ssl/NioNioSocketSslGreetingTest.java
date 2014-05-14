@@ -18,14 +18,13 @@ package org.jboss.netty.handler.ssl;
 import org.jboss.netty.channel.ChannelFactory;
 import org.jboss.netty.channel.socket.nio.NioClientSocketChannelFactory;
 import org.jboss.netty.channel.socket.nio.NioServerSocketChannelFactory;
-import org.jboss.netty.handler.ssl.AbstractSocketSslEchoTest.SSLEngineFactory;
 
 import java.util.concurrent.Executor;
 
 public class NioNioSocketSslGreetingTest extends AbstractSocketSslGreetingTest {
 
-    public NioNioSocketSslGreetingTest(SSLEngineFactory serverEngineFactory, SSLEngineFactory clientEngineFactory) {
-        super(serverEngineFactory, clientEngineFactory);
+    public NioNioSocketSslGreetingTest(SslContext serverCtx, SslContext clientCtx) {
+        super(serverCtx, clientCtx);
     }
 
     @Override
