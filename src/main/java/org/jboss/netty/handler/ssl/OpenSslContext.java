@@ -71,7 +71,6 @@ public final class OpenSslContext extends SslContext {
                 "DES-CBC3-SHA");
         DEFAULT_CIPHERS = Collections.unmodifiableList(ciphers);
 
-
         if (logger.isDebugEnabled()) {
             logger.debug("Default cipher suite (OpenSSL): " + ciphers);
         }
