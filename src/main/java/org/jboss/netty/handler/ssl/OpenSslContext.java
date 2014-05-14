@@ -21,6 +21,8 @@ import org.apache.tomcat.jni.SSLContext;
 import org.jboss.netty.channel.ChannelPipeline;
 import org.jboss.netty.channel.ChannelPipelineFactory;
 import org.jboss.netty.channel.Channels;
+import org.jboss.netty.logging.InternalLogger;
+import org.jboss.netty.logging.InternalLoggerFactory;
 
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
@@ -49,6 +51,7 @@ import java.util.List;
  */
 public final class OpenSslContext extends SslContext {
 
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(OpenSslContext.class);
     private static final List<String> DEFAULT_CIPHERS;
 
     static {
@@ -67,6 +70,11 @@ public final class OpenSslContext extends SslContext {
                 "AES256-SHA",
                 "DES-CBC3-SHA");
         DEFAULT_CIPHERS = Collections.unmodifiableList(ciphers);
+
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("Default cipher suite (OpenSSL): " + ciphers);
+        }
     }
 
     private final long aprPool;

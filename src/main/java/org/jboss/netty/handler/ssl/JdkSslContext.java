@@ -18,6 +18,8 @@ package org.jboss.netty.handler.ssl;
 
 import org.jboss.netty.buffer.ChannelBuffer;
 import org.jboss.netty.buffer.ChannelBufferInputStream;
+import org.jboss.netty.logging.InternalLogger;
+import org.jboss.netty.logging.InternalLoggerFactory;
 
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -29,7 +31,6 @@ import javax.security.auth.x500.X500Principal;
 import java.io.ByteArrayInputStream;
 import java.security.KeyFactory;
 import java.security.KeyStore;
-import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.Security;
 import java.security.cert.Certificate;
@@ -44,14 +45,18 @@ import java.util.List;
 
 public final class JdkSslContext extends SslContext {
 
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(JdkSslContext.class);
+
     private static final List<String> DEFAULT_CIPHERS;
+    private static final String PROTOCOL = "TLS";
 
     static {
         SSLContext context;
         try {
-            context = SSLContext.getDefault();
-        } catch (NoSuchAlgorithmException e) {
-            throw (Error) new Error().initCause(e);
+            context = SSLContext.getInstance(PROTOCOL);
+            context.init(null, null, null);
+        } catch (Exception e) {
+            throw new Error("failed to initialize the default SSL context", e);
         }
 
         String[] supportedCiphers = context.getSocketFactory().getSupportedCipherSuites();
@@ -68,6 +73,10 @@ public final class JdkSslContext extends SslContext {
         addCipher(supportedCiphers, ciphers, "TLS_RSA_WITH_AES_256_CBC_SHA");
         addCipher(supportedCiphers, ciphers, "SSL_RSA_WITH_DES_CBC_SHA");
         DEFAULT_CIPHERS = Collections.unmodifiableList(ciphers);
+
+        if (logger.isDebugEnabled()) {
+            logger.debug("Default cipher suite (JDK): " + ciphers);
+        }
     }
 
     private static void addCipher(String[] supportedCiphers, List<String> ciphers, String name) {
@@ -77,8 +86,6 @@ public final class JdkSslContext extends SslContext {
             }
         }
     }
-
-    private static final String PROTOCOL = "TLS";
 
     private static final byte[] EMPTY_KEYSTORE = {
             (byte) 0xfe, (byte) 0xed, (byte) 0xfe, (byte) 0xed, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
