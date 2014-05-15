@@ -79,7 +79,7 @@ public abstract class AbstractSocketSslEchoTest {
             ClassLoader cl = AbstractSocketSslEchoTest.class.getClassLoader();
             FileOutputStream certOut = new FileOutputStream(certPath);
             InputStream certIn = cl.getResourceAsStream("openssl.crt");
-            for (; ; ) {
+            for (;;) {
                 int b = certIn.read();
                 if (b < 0) {
                     break;
@@ -90,7 +90,7 @@ public abstract class AbstractSocketSslEchoTest {
 
             FileOutputStream keyOut = new FileOutputStream(keyPath);
             InputStream keyIn = cl.getResourceAsStream("openssl.pem");
-            for (; ; ) {
+            for (;;) {
                 int b = keyIn.read();
                 if (b < 0) {
                     break;
