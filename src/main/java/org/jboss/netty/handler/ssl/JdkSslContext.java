@@ -281,7 +281,7 @@ public final class JdkSslContext extends SslContext {
     }
 
     @Override
-    public SslBufferPool bufPool() {
+    public SslBufferPool bufferPool() {
         return bufPool;
     }
 

@@ -110,7 +110,7 @@ public abstract class SslContext {
 
     public abstract List<String> nextProtocols();
 
-    public abstract SslBufferPool bufPool();
+    public abstract SslBufferPool bufferPool();
 
     public abstract SSLEngine newEngine();
 

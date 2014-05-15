@@ -188,7 +188,7 @@ public abstract class AbstractSocketSslEchoTest {
         // Configure the server pipeline.
         if (serverUsesDelegatedTaskExecutor) {
             sb.getPipeline().addFirst(
-                    "ssl", new SslHandler(serverCtx.newEngine(), serverCtx.bufPool(), delegatedTaskExecutor));
+                    "ssl", new SslHandler(serverCtx.newEngine(), serverCtx.bufferPool(), delegatedTaskExecutor));
         } else {
             sb.getPipeline().addFirst("ssl", serverCtx.newHandler());
         }
@@ -197,7 +197,7 @@ public abstract class AbstractSocketSslEchoTest {
         // Configure the client pipeline.
         if (clientUsesDelegatedTaskExecutor) {
             cb.getPipeline().addFirst(
-                    "ssl", new SslHandler(clientCtx.newEngine(), clientCtx.bufPool(), delegatedTaskExecutor));
+                    "ssl", new SslHandler(clientCtx.newEngine(), clientCtx.bufferPool(), delegatedTaskExecutor));
         } else {
             cb.getPipeline().addFirst("ssl", clientCtx.newHandler());
         }

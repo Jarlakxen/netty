@@ -299,7 +299,7 @@ public final class OpenSslContext extends SslContext {
     }
 
     @Override
-    public SslBufferPool bufPool() {
+    public SslBufferPool bufferPool() {
         return bufPool;
     }
 
@@ -317,6 +317,9 @@ public final class OpenSslContext extends SslContext {
     }
 
     public void setTicketKeys(byte[] keys) {
+        if (keys != null) {
+            throw new NullPointerException("keys");
+        }
         SSLContext.setSessionTicketKeys(ctx, keys);
     }
 
