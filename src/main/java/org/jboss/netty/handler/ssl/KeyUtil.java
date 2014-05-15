@@ -36,9 +36,9 @@ import java.util.regex.Pattern;
 /**
  * Reads a PEM file and converts it into a {@link KeyStore}.
  */
-final class PemReader {
+public final class KeyUtil {
 
-    private static final InternalLogger logger = InternalLoggerFactory.getInstance(PemReader.class);
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(KeyUtil.class);
 
     private static final Pattern CERT_PATTERN = Pattern.compile(
             "-+BEGIN\\s+.*CERTIFICATE[^-]*-+(?:\\s|\\r|\\n)+" + // Header
@@ -51,11 +51,11 @@ final class PemReader {
                     "-+END\\s+.*PRIVATE\\s+KEY[^-]*-+",            // Footer
             Pattern.CASE_INSENSITIVE);
 
-    static ChannelBuffer[] readCertificates(String filePath) throws IOException {
+    public static ChannelBuffer[] readCertificates(String filePath) throws IOException {
         return readCertificates(new FileInputStream(filePath));
     }
 
-    private static ChannelBuffer[] readCertificates(InputStream in) throws IOException {
+    public static ChannelBuffer[] readCertificates(InputStream in) throws IOException {
         String content = readContent(in);
 
         List<ChannelBuffer> certs = new ArrayList<ChannelBuffer>();
@@ -77,11 +77,11 @@ final class PemReader {
         return certs.toArray(new ChannelBuffer[certs.size()]);
     }
 
-    static ChannelBuffer readPrivateKey(String filePath) throws IOException {
+    public static ChannelBuffer readPrivateKey(String filePath) throws IOException {
         return readPrivateKey(new FileInputStream(filePath));
     }
 
-    private static ChannelBuffer readPrivateKey(InputStream in) throws IOException {
+    public static ChannelBuffer readPrivateKey(InputStream in) throws IOException {
         String content = readContent(in);
 
         Matcher m = KEY_PATTERN.matcher(content);
@@ -90,6 +90,11 @@ final class PemReader {
         }
 
         return Base64.decode(ChannelBuffers.copiedBuffer(m.group(1), CharsetUtil.US_ASCII));
+    }
+
+    public static String[] newSelfSignedCertificate() {
+        // TODO: Implement me
+        return null;
     }
 
     private static String readContent(InputStream in) throws IOException {
@@ -114,5 +119,5 @@ final class PemReader {
         return out.toString(CharsetUtil.US_ASCII.name());
     }
 
-    private PemReader() { }
+    private KeyUtil() { }
 }

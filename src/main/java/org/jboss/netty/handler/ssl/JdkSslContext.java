@@ -28,7 +28,6 @@ import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLSessionContext;
 import javax.net.ssl.TrustManagerFactory;
 import javax.security.auth.x500.X500Principal;
-import java.io.ByteArrayInputStream;
 import java.security.KeyFactory;
 import java.security.KeyStore;
 import java.security.PrivateKey;
@@ -87,13 +86,6 @@ public final class JdkSslContext extends SslContext {
         }
     }
 
-    private static final byte[] EMPTY_KEYSTORE = {
-            (byte) 0xfe, (byte) 0xed, (byte) 0xfe, (byte) 0xed, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
-            (byte) 0xe2, 0x68, 0x6e, 0x45, (byte) 0xfb, 0x43, (byte) 0xdf, (byte) 0xa4, (byte) 0xd9, (byte) 0x92,
-            (byte) 0xdd, 0x41, (byte) 0xce, (byte) 0xb6, (byte) 0xb2, 0x1c, 0x63, 0x30, (byte) 0xd7, (byte) 0x92
-    };
-    private static final char[] EMPTY_KEYSTORE_PASSWORD = "changeit".toCharArray();
-
     private final boolean client;
     private final SslBufferPool bufPool;
     private final SSLContext ctx;
@@ -136,12 +128,12 @@ public final class JdkSslContext extends SslContext {
 
         try {
             KeyStore ks = KeyStore.getInstance("JKS");
-            ks.load(new ByteArrayInputStream(EMPTY_KEYSTORE), EMPTY_KEYSTORE_PASSWORD);
+            ks.load(null, null);
             CertificateFactory cf = CertificateFactory.getInstance("X.509");
             KeyFactory rsaKF = KeyFactory.getInstance("RSA");
             KeyFactory dsaKF = KeyFactory.getInstance("DSA");
 
-            ChannelBuffer encodedKeyBuf = PemReader.readPrivateKey(keyPath);
+            ChannelBuffer encodedKeyBuf = KeyUtil.readPrivateKey(keyPath);
             byte[] encodedKey = new byte[encodedKeyBuf.readableBytes()];
             encodedKeyBuf.readBytes(encodedKey);
             PKCS8EncodedKeySpec encodedKeySpec = new PKCS8EncodedKeySpec(encodedKey);
@@ -154,7 +146,7 @@ public final class JdkSslContext extends SslContext {
             }
 
             List<Certificate> certChain = new ArrayList<Certificate>();
-            for (ChannelBuffer buf: PemReader.readCertificates(certChainPath)) {
+            for (ChannelBuffer buf: KeyUtil.readCertificates(certChainPath)) {
                 certChain.add(cf.generateCertificate(new ChannelBufferInputStream(buf)));
             }
 
@@ -209,10 +201,10 @@ public final class JdkSslContext extends SslContext {
                 }
             } else {
                 KeyStore ks = KeyStore.getInstance("JKS");
-                ks.load(new ByteArrayInputStream(EMPTY_KEYSTORE), EMPTY_KEYSTORE_PASSWORD);
+                ks.load(null, null);
                 CertificateFactory cf = CertificateFactory.getInstance("X.509");
 
-                for (ChannelBuffer buf: PemReader.readCertificates(certChainPath)) {
+                for (ChannelBuffer buf: KeyUtil.readCertificates(certChainPath)) {
                     X509Certificate cert = (X509Certificate) cf.generateCertificate(new ChannelBufferInputStream(buf));
                     X500Principal principal = cert.getSubjectX500Principal();
                     ks.setCertificateEntry(principal.getName("RFC2253"), cert);
