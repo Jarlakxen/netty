@@ -127,22 +127,35 @@ public final class KeyUtil {
      * @throws UnsupportedOperationException if both OpenJDK proprietary API and Bouncy Castle are unavailable
      */
     public static String[] newSelfSignedCertificate(String fqdn) {
-        try {
-            // Bypass entrophy collection by using insecure random generator.
-            // We just want to generate it without any delay because it's for testing purposes only.
-            SecureRandom random = ThreadLocalInsecureRandom.current();
+        // Bypass entrophy collection by using insecure random generator.
+        // We just want to generate it without any delay because it's for testing purposes only.
+        SecureRandom random = ThreadLocalInsecureRandom.current();
 
-            // Generate a 1024-bit RSA key pair.
+        // Generate a 1024-bit RSA key pair.
+        final KeyPair keypair;
+        try {
             KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
             keyGen.initialize(1024, random);
-            KeyPair keypair = keyGen.generateKeyPair();
+            keypair = keyGen.generateKeyPair();
+        } catch (Exception e) {
+            // Should not reach here because every Java implementation must have RSA key pair generator.
+            throw new UnsupportedOperationException("no provide succeeded to generate an RSA key pair", e);
+        }
 
-            // Try Bouncy Castle.
-            return BouncyCastleSelfSignedCertGenerator.generate(fqdn, keypair, random);
+        try {
             // Try the OpenJDK's proprietary implementation.
-            //return OpenJdkSelfSignedCertGenerator.generate(fqdn);
+            return OpenJdkSelfSignedCertGenerator.generate(fqdn, keypair, random);
         } catch (Throwable t) {
-            throw new UnsupportedOperationException("no provider succeeded to generate a self-signed certificate.", t);
+            logger.debug("Failed to generate a self-signed X.509 certificate using sun.security.x509:", t);
+            try {
+                // Try Bouncy Castle if the current JVM didn't have sun.security.x509.
+                return BouncyCastleSelfSignedCertGenerator.generate(fqdn, keypair, random);
+            } catch (Throwable t2) {
+                logger.debug("Failed to generate a self-signed X.509 certificate using Bouncy Castle:", t2);
+                throw new UnsupportedOperationException(
+                        "No provider succeeded to generate a self-signed certificate. " +
+                                "See debug log for the root cause.");
+            }
         }
     }
 
