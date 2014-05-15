@@ -37,10 +37,7 @@ import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.Parameters;
 
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -67,43 +64,9 @@ public abstract class AbstractSocketSslEchoTest {
     static {
         random.nextBytes(data);
 
-        // Copy the self-signed certificate and its private key into a temporary directory.
-        final String certPath;
-        final String keyPath;
-        try {
-            certPath = File.createTempFile("netty_ssl_test_", ".crt").getAbsolutePath();
-            new File(certPath).deleteOnExit();
-            keyPath = File.createTempFile("netty_ssl_test_", ".pem").getAbsolutePath();
-            new File(keyPath).deleteOnExit();
-
-            ClassLoader cl = AbstractSocketSslEchoTest.class.getClassLoader();
-            FileOutputStream certOut = new FileOutputStream(certPath);
-            InputStream certIn = cl.getResourceAsStream("openssl.crt");
-            for (;;) {
-                int b = certIn.read();
-                if (b < 0) {
-                    break;
-                }
-                certOut.write(b);
-            }
-            certOut.close();
-
-            FileOutputStream keyOut = new FileOutputStream(keyPath);
-            InputStream keyIn = cl.getResourceAsStream("openssl.pem");
-            for (;;) {
-                int b = keyIn.read();
-                if (b < 0) {
-                    break;
-                }
-                keyOut.write(b);
-            }
-            keyOut.close();
-        } catch (Exception e) {
-            throw new Error("failed to copy the self-signed certificate", e);
-        }
-
-        CERT_PATH = certPath;
-        KEY_PATH = keyPath;
+        String[] paths = KeyUtil.newSelfSignedCertificate();
+        CERT_PATH = paths[0];
+        KEY_PATH = paths[1];
     }
 
     @Parameters(name = "{index}: serverCtx = {0}, clientCtx = {1}")

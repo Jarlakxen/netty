@@ -24,11 +24,21 @@ import org.jboss.netty.logging.InternalLoggerFactory;
 import org.jboss.netty.util.CharsetUtil;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.security.KeyStore;
+import java.security.PrivateKey;
+import java.security.SecureRandom;
+import java.security.cert.CertificateEncodingException;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -50,6 +60,11 @@ public final class KeyUtil {
                     "([a-z0-9+/=\\r\\n]+)" +                       // Base64 text
                     "-+END\\s+.*PRIVATE\\s+KEY[^-]*-+",            // Footer
             Pattern.CASE_INSENSITIVE);
+
+    /** Current time minus 1 year, just in case software clock goes back due to time synchronization */
+    static final Date NOT_BEFORE = new Date(System.currentTimeMillis() - 86400000L * 365);
+    /** The maximum possible value in X.509 specification: 9999-12-31 23:59:59 */
+    static final Date NOT_AFTER = new Date(253402300799000L);
 
     public static ChannelBuffer[] readCertificates(String filePath) throws IOException {
         return readCertificates(new FileInputStream(filePath));
@@ -93,8 +108,89 @@ public final class KeyUtil {
     }
 
     public static String[] newSelfSignedCertificate() {
-        // TODO: Implement me
-        return null;
+        return newSelfSignedCertificate("example.com");
+    }
+
+    /**
+     * Generates a temporary self-signed certificate for testing purposes.
+     * A X.509 certificate file and a RSA private key file are generated in a system's temporary directory
+     * using {@link File#createTempFile(String, String)}, and they are deleted when the JVM exits
+     * using {@link File#deleteOnExit()}.
+     * <p>
+     * At first, this method tries to use OpenJDK's X.509 implementation ({@code sun.security.x509}).
+     * If it fails, it secondly tries to use <a href="http://www.bouncycastle.org/">Bouncy Castle</a>.
+     * </p>
+     *
+     * @return a {@link String} array whose 0th element is the path to the X.509 certificate file and
+     *         whose 1st element is the path to the RSA private key file
+     *
+     * @throws UnsupportedOperationException if both OpenJDK proprietary API and Bouncy Castle are unavailable
+     */
+    public static String[] newSelfSignedCertificate(String fqdn) {
+        try {
+            // Bypass entrophy collection by using insecure random generator.
+            // We just want to generate it without any delay because it's for testing purposes only.
+            SecureRandom random = ThreadLocalInsecureRandom.current();
+
+            // Generate a 1024-bit RSA key pair.
+            KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
+            keyGen.initialize(1024, random);
+            KeyPair keypair = keyGen.generateKeyPair();
+
+            // Try Bouncy Castle.
+            return BouncyCastleSelfSignedCertGenerator.generate(fqdn, keypair, random);
+            // Try the OpenJDK's proprietary implementation.
+            //return OpenJdkSelfSignedCertGenerator.generate(fqdn);
+        } catch (Throwable t) {
+            throw new UnsupportedOperationException("no provider succeeded to generate a self-signed certificate.", t);
+        }
+    }
+
+    static String[] newSelfSignedCertificate(
+            String fqdn, PrivateKey key, X509Certificate cert) throws IOException, CertificateEncodingException {
+
+        // Encode the private key into a file.
+        String keyText = "-----BEGIN PRIVATE KEY-----\n" +
+                Base64.encode(ChannelBuffers.wrappedBuffer(key.getEncoded()), true).toString(CharsetUtil.US_ASCII) +
+                "\n-----END PRIVATE KEY-----\n";
+
+        File keyFile = File.createTempFile("keyutil_" + fqdn + '_', ".key");
+        keyFile.deleteOnExit();
+
+        OutputStream keyOut = new FileOutputStream(keyFile);
+        try {
+            keyOut.write(keyText.getBytes(CharsetUtil.US_ASCII));
+            keyOut.close();
+            keyOut = null;
+        } finally {
+            if (keyOut != null) {
+                safeClose(keyFile, keyOut);
+                safeDelete(keyFile);
+            }
+        }
+
+        // Encode the certificate into a CRT file.
+        String certText = "-----BEGIN CERTIFICATE-----\n" +
+                Base64.encode(ChannelBuffers.wrappedBuffer(cert.getEncoded()), true).toString(CharsetUtil.US_ASCII) +
+                "\n-----END CERTIFICATE-----\n";
+
+        File certFile = File.createTempFile("keyutil_" + fqdn + '_', ".crt");
+        certFile.deleteOnExit();
+
+        OutputStream certOut = new FileOutputStream(certFile);
+        try {
+            certOut.write(certText.getBytes(CharsetUtil.US_ASCII));
+            certOut.close();
+            certOut = null;
+        } finally {
+            if (certOut != null) {
+                safeClose(certFile, certOut);
+                safeDelete(certFile);
+                safeDelete(keyFile);
+            }
+        }
+
+        return new String[] { certFile.getPath(), keyFile.getPath() };
     }
 
     private static String readContent(InputStream in) throws IOException {
@@ -117,6 +213,20 @@ public final class KeyUtil {
         }
 
         return out.toString(CharsetUtil.US_ASCII.name());
+    }
+
+    private static void safeDelete(File certFile) {
+        if (!certFile.delete()) {
+            logger.warn("Failed to delete a file: " + certFile);
+        }
+    }
+
+    private static void safeClose(File keyFile, OutputStream keyOut) {
+        try {
+            keyOut.close();
+        } catch (IOException e) {
+            logger.warn("Failed to close a file: " + keyFile, e);
+        }
     }
 
     private KeyUtil() { }
