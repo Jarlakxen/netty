@@ -95,7 +95,6 @@ public abstract class JdkSslContext extends SslContext {
         return unmodifiableCipherSuites;
     }
 
-
     @Override
     public final long sessionCacheSize() {
         return sessionContext().getSessionCacheSize();
