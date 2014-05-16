@@ -33,7 +33,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;
 
-public class FingerprintTrustManagerFactory extends SimpleTrustManagerFactory {
+public final class FingerprintTrustManagerFactory extends SimpleTrustManagerFactory {
 
     private static final Pattern FINGERPRINT_PATTERN = Pattern.compile("^[0-9a-fA-F:]+$");
     private static final Pattern FINGERPRINT_STRIP_PATTERN = Pattern.compile(":");
