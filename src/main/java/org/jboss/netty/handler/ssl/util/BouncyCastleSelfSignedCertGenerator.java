@@ -32,6 +32,8 @@ import java.security.Provider;
 import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 
+import static org.jboss.netty.handler.ssl.util.SelfSignedCertificate.*;
+
 final class BouncyCastleSelfSignedCertGenerator {
 
     private static final Provider PROVIDER = new BouncyCastleProvider();
@@ -42,14 +44,14 @@ final class BouncyCastleSelfSignedCertGenerator {
         // Prepare the information required for generating an X.509 certificate.
         X500Name owner = new X500Name("CN=" + fqdn);
         X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
-                owner, new BigInteger(64, random), SelfSignedCertificate.NOT_BEFORE, SelfSignedCertificate.NOT_AFTER, owner, keypair.getPublic());
+                owner, new BigInteger(64, random), NOT_BEFORE, NOT_AFTER, owner, keypair.getPublic());
 
         ContentSigner signer = new JcaContentSignerBuilder("SHA256WithRSAEncryption").build(key);
         X509CertificateHolder certHolder = builder.build(signer);
         X509Certificate cert = new JcaX509CertificateConverter().setProvider(PROVIDER).getCertificate(certHolder);
         cert.verify(keypair.getPublic());
 
-        return SelfSignedCertificate.newSelfSignedCertificate(fqdn, key, cert);
+        return newSelfSignedCertificate(fqdn, key, cert);
     }
 
     private BouncyCastleSelfSignedCertGenerator() { }

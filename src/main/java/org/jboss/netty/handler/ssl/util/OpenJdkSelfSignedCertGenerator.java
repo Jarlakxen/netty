@@ -33,6 +33,8 @@ import java.security.KeyPair;
 import java.security.PrivateKey;
 import java.security.SecureRandom;
 
+import static org.jboss.netty.handler.ssl.util.SelfSignedCertificate.*;
+
 final class OpenJdkSelfSignedCertGenerator {
 
     static String[] generate(String fqdn, KeyPair keypair, SecureRandom random) throws Exception {
@@ -45,7 +47,7 @@ final class OpenJdkSelfSignedCertGenerator {
         info.set(X509CertInfo.SERIAL_NUMBER, new CertificateSerialNumber(new BigInteger(64, random)));
         info.set(X509CertInfo.SUBJECT, new CertificateSubjectName(owner));
         info.set(X509CertInfo.ISSUER, new CertificateIssuerName(owner));
-        info.set(X509CertInfo.VALIDITY, new CertificateValidity(SelfSignedCertificate.NOT_BEFORE, SelfSignedCertificate.NOT_AFTER));
+        info.set(X509CertInfo.VALIDITY, new CertificateValidity(NOT_BEFORE, NOT_AFTER));
         info.set(X509CertInfo.KEY, new CertificateX509Key(keypair.getPublic()));
         info.set(X509CertInfo.ALGORITHM_ID,
                 new CertificateAlgorithmId(new AlgorithmId(AlgorithmId.sha1WithRSAEncryption_oid)));
@@ -60,7 +62,7 @@ final class OpenJdkSelfSignedCertGenerator {
         cert.sign(key, "SHA1withRSA");
         cert.verify(keypair.getPublic());
 
-        return SelfSignedCertificate.newSelfSignedCertificate(fqdn, key, cert);
+        return newSelfSignedCertificate(fqdn, key, cert);
     }
 
     private OpenJdkSelfSignedCertGenerator() { }

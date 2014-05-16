@@ -127,7 +127,7 @@ public final class SelfSignedCertificate {
 
         OutputStream keyOut = new FileOutputStream(keyFile);
         try {
-            keyOut.write(keyText.getBytes(CharsetUtil.US_ASCII));
+            keyOut.write(keyText.getBytes(CharsetUtil.US_ASCII.name()));
             keyOut.close();
             keyOut = null;
         } finally {
@@ -147,7 +147,7 @@ public final class SelfSignedCertificate {
 
         OutputStream certOut = new FileOutputStream(certFile);
         try {
-            certOut.write(certText.getBytes(CharsetUtil.US_ASCII));
+            certOut.write(certText.getBytes(CharsetUtil.US_ASCII.name()));
             certOut.close();
             certOut = null;
         } finally {
