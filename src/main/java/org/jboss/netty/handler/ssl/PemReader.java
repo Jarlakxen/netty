@@ -28,7 +28,10 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.security.KeyException;
 import java.security.KeyStore;
+import java.security.cert.CertificateException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -52,12 +55,13 @@ final class PemReader {
                     "-+END\\s+.*PRIVATE\\s+KEY[^-]*-+",            // Footer
             Pattern.CASE_INSENSITIVE);
 
-    static ChannelBuffer[] readCertificates(File file) throws IOException {
-        return readCertificates(new FileInputStream(file));
-    }
-
-    private static ChannelBuffer[] readCertificates(InputStream in) throws IOException {
-        String content = readContent(in);
+    static ChannelBuffer[] readCertificates(File file) throws CertificateException {
+        String content;
+        try {
+            content = readContent(file);
+        } catch (IOException e) {
+            throw new CertificateException("failed to read a file: " + file, e);
+        }
 
         List<ChannelBuffer> certs = new ArrayList<ChannelBuffer>();
         Matcher m = CERT_PATTERN.matcher(content);
@@ -72,28 +76,30 @@ final class PemReader {
         }
 
         if (certs.isEmpty()) {
-            throw new IllegalArgumentException("found no certificates");
+            throw new CertificateException("found no certificates: " + file);
         }
 
         return certs.toArray(new ChannelBuffer[certs.size()]);
     }
 
-    static ChannelBuffer readPrivateKey(File file) throws IOException {
-        return readPrivateKey(new FileInputStream(file));
-    }
-
-    private static ChannelBuffer readPrivateKey(InputStream in) throws IOException {
-        String content = readContent(in);
+    static ChannelBuffer readPrivateKey(File file) throws KeyException {
+        String content;
+        try {
+            content = readContent(file);
+        } catch (IOException e) {
+            throw new KeyException("failed to read a file: " + file, e);
+        }
 
         Matcher m = KEY_PATTERN.matcher(content);
         if (!m.find()) {
-            throw new IllegalArgumentException("found no private key");
+            throw new KeyException("found no private key: " + file);
         }
 
         return Base64.decode(ChannelBuffers.copiedBuffer(m.group(1), CharsetUtil.US_ASCII));
     }
 
-    private static String readContent(InputStream in) throws IOException {
+    private static String readContent(File file) throws IOException {
+        InputStream in = new FileInputStream(file);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         try {
             byte[] buf = new byte[8192];
@@ -104,15 +110,27 @@ final class PemReader {
                 }
                 out.write(buf, 0, ret);
             }
+            return out.toString(CharsetUtil.US_ASCII.name());
         } finally {
-            try {
-                in.close();
-            } catch (IOException e) {
-                logger.warn("Failed to close a stream.", e);
-            }
+            safeClose(in);
+            safeClose(out);
         }
+    }
 
-        return out.toString(CharsetUtil.US_ASCII.name());
+    private static void safeClose(InputStream in) {
+        try {
+            in.close();
+        } catch (IOException e) {
+            logger.warn("Failed to close a stream.", e);
+        }
+    }
+
+    private static void safeClose(OutputStream out) {
+        try {
+            out.close();
+        } catch (IOException e) {
+            logger.warn("Failed to close a stream.", e);
+        }
     }
 
     private PemReader() { }
