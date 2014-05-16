@@ -37,7 +37,7 @@ import java.util.List;
  * <pre>
  * public class MyChannelPipelineFactory extends {@link ChannelPipelineFactory} {
  *
- *     private final {@link OpenSslContext} sslEngineFactory = ...;
+ *     private final {@link OpenSslServerContext} sslEngineFactory = ...;
  *
  *     public {@link ChannelPipeline} getPipeline() {
  *         {@link ChannelPipeline} p = {@link Channels#pipeline() Channels.pipeline()};
@@ -49,9 +49,9 @@ import java.util.List;
  * </pre>
  *
  */
-public final class OpenSslContext extends SslContext {
+public final class OpenSslServerContext extends SslContext {
 
-    private static final InternalLogger logger = InternalLoggerFactory.getInstance(OpenSslContext.class);
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(OpenSslServerContext.class);
     private static final List<String> DEFAULT_CIPHERS;
 
     static {
@@ -77,7 +77,6 @@ public final class OpenSslContext extends SslContext {
     }
 
     private final long aprPool;
-    private final SslBufferPool bufPool;
 
     private final List<String> ciphers = new ArrayList<String>();
     private final List<String> unmodifiableCiphers = Collections.unmodifiableList(ciphers);
@@ -90,11 +89,13 @@ public final class OpenSslContext extends SslContext {
     private final long ctx;
     private final OpenSslSessionStats stats;
 
-    public OpenSslContext(
+    public OpenSslServerContext(
             SslBufferPool bufPool,
             File certChainFile, File keyFile, String keyPassword,
             Iterable<String> ciphers, Iterable<String> nextProtocols,
             long sessionCacheSize, long sessionTimeout) throws SSLException {
+
+        super(bufPool);
 
         OpenSsl.ensureAvailability();
 
@@ -138,25 +139,10 @@ public final class OpenSslContext extends SslContext {
         // Allocate a new APR pool.
         aprPool = Pool.create(0);
 
-        // Allocate a new direct buffer pool if necessary.
+        // Create a new SSL_CTX and configure it.
         boolean success = false;
         try {
-            if (bufPool == null) {
-                bufPool = new SslBufferPool(true);
-            }
-            success = true;
-        } finally {
-            if (!success) {
-                Pool.destroy(aprPool);
-            }
-        }
-
-        this.bufPool = bufPool;
-
-        // Create a new SSL_CTX and configure it.
-        success = false;
-        try {
-            synchronized (OpenSslContext.class) {
+            synchronized (OpenSslServerContext.class) {
                 try {
                     ctx = SSLContext.make(aprPool, SSL.SSL_PROTOCOL_ALL, SSL.SSL_MODE_SERVER);
                 } catch (Exception e) {
@@ -258,6 +244,11 @@ public final class OpenSslContext extends SslContext {
     }
 
     @Override
+    SslBufferPool newBufferPool() {
+        return new SslBufferPool(true);
+    }
+
+    @Override
     public boolean isClient() {
         return false;
     }
@@ -298,17 +289,12 @@ public final class OpenSslContext extends SslContext {
         return stats;
     }
 
-    @Override
-    public SslBufferPool bufferPool() {
-        return bufPool;
-    }
-
     /**
      * Returns a new server-side {@link SSLEngine} with the current configuration.
      */
     @Override
     public SSLEngine newEngine() {
-        return new OpenSslEngine(ctx, bufPool);
+        return new OpenSslEngine(ctx, bufferPool());
     }
 
     @Override
@@ -318,12 +304,12 @@ public final class OpenSslContext extends SslContext {
 
     @Override
     public SslHandler newHandler() {
-        return new SslHandler(newEngine(), bufPool);
+        return new SslHandler(newEngine(), bufferPool());
     }
 
     @Override
     public SslHandler newHandler(String host, int port) {
-        return new SslHandler(newEngine(host, port), bufPool);
+        return new SslHandler(newEngine(host, port), bufferPool());
     }
 
     public void setTicketKeys(byte[] keys) {
@@ -337,7 +323,7 @@ public final class OpenSslContext extends SslContext {
     @SuppressWarnings("FinalizeDeclaration")
     protected void finalize() throws Throwable {
         super.finalize();
-        synchronized (OpenSslContext.class) {
+        synchronized (OpenSslServerContext.class) {
             if (ctx != 0) {
                 SSLContext.free(ctx);
             }

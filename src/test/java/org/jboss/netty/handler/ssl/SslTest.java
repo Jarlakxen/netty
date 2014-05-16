@@ -63,10 +63,10 @@ public abstract class SslTest {
         List<Object[]> params = new ArrayList<Object[]>();
 
         List<SslContext> serverContexts = new ArrayList<SslContext>();
-        serverContexts.add(new JdkSslContext(null, CERT_FILE, KEY_FILE, null, null, null, 0, 0));
+        serverContexts.add(new JdkSslServerContext(CERT_FILE, KEY_FILE));
 
         List<SslContext> clientContexts = new ArrayList<SslContext>();
-        clientContexts.add(new JdkSslContext(null, CERT_FILE, null, null, null, 0, 0));
+        clientContexts.add(new JdkSslClientContext(CERT_FILE));
 
         List<ChannelFactory> serverChannelFactories = new ArrayList<ChannelFactory>();
         serverChannelFactories.add(new NioServerSocketChannelFactory(executor, executor));
@@ -78,7 +78,7 @@ public abstract class SslTest {
 
         boolean hasOpenSsl = OpenSsl.isAvailable();
         if (hasOpenSsl) {
-            serverContexts.add(new OpenSslContext(null, CERT_FILE, KEY_FILE, null, null, null, 0, 0));
+            serverContexts.add(new OpenSslServerContext(null, CERT_FILE, KEY_FILE, null, null, null, 0, 0));
 
             // TODO: Client mode is not supported yet.
             // clientContexts.add(new OpenSslContext(null, CERT_FILE, null, null, null, 0, 0));

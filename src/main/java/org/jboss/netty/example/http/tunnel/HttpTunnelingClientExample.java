@@ -25,7 +25,7 @@ import org.jboss.netty.channel.socket.oio.OioClientSocketChannelFactory;
 import org.jboss.netty.handler.codec.string.StringDecoder;
 import org.jboss.netty.handler.codec.string.StringEncoder;
 import org.jboss.netty.handler.logging.LoggingHandler;
-import org.jboss.netty.handler.ssl.JdkSslContext;
+import org.jboss.netty.handler.ssl.JdkSslClientContext;
 import org.jboss.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import org.jboss.netty.logging.InternalLogLevel;
 
@@ -72,9 +72,7 @@ public class HttpTunnelingClientExample {
 
         // Configure SSL if necessary
         if ("https".equals(scheme)) {
-            b.setOption(
-                    "sslContext",
-                    new JdkSslContext(null, null, InsecureTrustManagerFactory.INSTANCE, null, null, 0, 0).context());
+            b.setOption("sslContext", new JdkSslClientContext(InsecureTrustManagerFactory.INSTANCE).context());
         } else if (!"http".equals(scheme)) {
             // Only HTTP and HTTPS are supported.
             System.err.println("Only HTTP(S) is supported.");

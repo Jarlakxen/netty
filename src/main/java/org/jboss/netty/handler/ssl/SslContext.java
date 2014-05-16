@@ -30,14 +30,14 @@ public abstract class SslContext {
 
     public static Class<? extends SslContext> defaultServerContextType() {
         if (OpenSsl.isAvailable()) {
-            return OpenSslContext.class;
+            return OpenSslServerContext.class;
         } else {
-            return JdkSslContext.class;
+            return JdkSslServerContext.class;
         }
     }
 
     public static Class<? extends SslContext> defaultClientContextType() {
-        return JdkSslContext.class;
+        return JdkSslServerContext.class;
     }
 
     public static SslContext newServerContext(File certChainFile, File keyFile) throws SSLException {
@@ -56,11 +56,11 @@ public abstract class SslContext {
             long sessionCacheSize, long sessionTimeout) throws SSLException {
 
         if (OpenSsl.isAvailable()) {
-            return new OpenSslContext(
+            return new OpenSslServerContext(
                     bufPool, certChainFile, keyFile, keyPassword,
                     ciphers, nextProtocols, sessionCacheSize, sessionTimeout);
         } else {
-            return new JdkSslContext(
+            return new JdkSslServerContext(
                     bufPool, certChainFile, keyFile, keyPassword,
                     ciphers, nextProtocols, sessionCacheSize, sessionTimeout);
         }
@@ -88,18 +88,30 @@ public abstract class SslContext {
             File certChainFile, TrustManagerFactory trustManagerFactory,
             Iterable<String> ciphers, ApplicationProtocolSelector nextProtocolSelector,
             long sessionCacheSize, long sessionTimeout) throws SSLException {
-        return new JdkSslContext(
+        return new JdkSslClientContext(
                 bufPool, certChainFile, trustManagerFactory,
                 ciphers, nextProtocolSelector, sessionCacheSize, sessionTimeout);
     }
 
-    protected SslContext() { }
+    private final SslBufferPool bufferPool;
 
-    public abstract boolean isClient();
+    SslContext(SslBufferPool bufferPool) {
+        this.bufferPool = bufferPool == null? newBufferPool() : bufferPool;
+    }
+
+    SslBufferPool newBufferPool() {
+        return new SslBufferPool(false);
+    }
 
     public final boolean isServer() {
         return !isClient();
     }
+
+    public final SslBufferPool bufferPool() {
+        return bufferPool;
+    }
+
+    public abstract boolean isClient();
 
     public abstract List<String> cipherSuites();
 
@@ -110,8 +122,6 @@ public abstract class SslContext {
     public abstract ApplicationProtocolSelector nextProtocolSelector();
 
     public abstract List<String> nextProtocols();
-
-    public abstract SslBufferPool bufferPool();
 
     public abstract SSLEngine newEngine();
 

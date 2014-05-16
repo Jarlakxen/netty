@@ -16,39 +16,23 @@
 
 package org.jboss.netty.handler.ssl;
 
-import org.jboss.netty.buffer.ChannelBuffer;
-import org.jboss.netty.buffer.ChannelBufferInputStream;
 import org.jboss.netty.logging.InternalLogger;
 import org.jboss.netty.logging.InternalLoggerFactory;
 
-import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
-import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLSessionContext;
-import javax.net.ssl.TrustManagerFactory;
-import javax.security.auth.x500.X500Principal;
-import java.io.File;
-import java.security.KeyFactory;
-import java.security.KeyStore;
-import java.security.PrivateKey;
-import java.security.Security;
-import java.security.cert.Certificate;
-import java.security.cert.CertificateFactory;
-import java.security.cert.X509Certificate;
-import java.security.spec.InvalidKeySpecException;
-import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
-public final class JdkSslContext extends SslContext {
+public abstract class JdkSslContext extends SslContext {
 
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(JdkSslContext.class);
 
-    private static final List<String> DEFAULT_CIPHERS;
-    private static final String PROTOCOL = "TLS";
+    static final List<String> DEFAULT_CIPHERS;
+    static final String PROTOCOL = "TLS";
 
     static {
         SSLContext context;
@@ -87,220 +71,65 @@ public final class JdkSslContext extends SslContext {
         }
     }
 
-    private final boolean client;
-    private final SslBufferPool bufPool;
-    private final SSLContext ctx;
-    private final SSLSessionContext sessCtx;
-    private final String[] ciphers;
-    private final List<String> unmodifiableCiphers;
+    private final String[] cipherSuites;
+    private final List<String> unmodifiableCipherSuites;
 
-    /**
-     * Creates a new factory that creates a new server-side {@link SSLEngine}.
-     */
-    public JdkSslContext(
-            SslBufferPool bufPool,
-            File certChainFile, File keyFile, String keyPassword,
-            Iterable<String> ciphers, Iterable<String> nextProtocols,
-            long sessionCacheSize, long sessionTimeout) throws SSLException {
-
-        if (certChainFile == null) {
-            throw new NullPointerException("certChainFile");
-        }
-        if (keyFile == null) {
-            throw new NullPointerException("keyFile");
-        }
-
-        if (keyPassword == null) {
-            keyPassword = "";
-        }
-
-        if (nextProtocols != null && nextProtocols.iterator().hasNext()) {
-            throw new SSLException("NPN/ALPN unsupported: " + nextProtocols);
-        }
-
-        this.ciphers = toCipherSuiteArray(ciphers);
-        unmodifiableCiphers = Collections.unmodifiableList(Arrays.asList(this.ciphers));
-        this.bufPool = bufPool == null? new SslBufferPool(false) : bufPool;
-
-        String algorithm = Security.getProperty("ssl.KeyManagerFactory.algorithm");
-        if (algorithm == null) {
-            algorithm = "SunX509";
-        }
-
-        try {
-            KeyStore ks = KeyStore.getInstance("JKS");
-            ks.load(null, null);
-            CertificateFactory cf = CertificateFactory.getInstance("X.509");
-            KeyFactory rsaKF = KeyFactory.getInstance("RSA");
-            KeyFactory dsaKF = KeyFactory.getInstance("DSA");
-
-            ChannelBuffer encodedKeyBuf = PemReader.readPrivateKey(keyFile);
-            byte[] encodedKey = new byte[encodedKeyBuf.readableBytes()];
-            encodedKeyBuf.readBytes(encodedKey);
-            PKCS8EncodedKeySpec encodedKeySpec = new PKCS8EncodedKeySpec(encodedKey);
-
-            PrivateKey key;
-            try {
-                key = rsaKF.generatePrivate(encodedKeySpec);
-            } catch (InvalidKeySpecException ignore) {
-                key = dsaKF.generatePrivate(encodedKeySpec);
-            }
-
-            List<Certificate> certChain = new ArrayList<Certificate>();
-            for (ChannelBuffer buf: PemReader.readCertificates(certChainFile)) {
-                certChain.add(cf.generateCertificate(new ChannelBufferInputStream(buf)));
-            }
-
-            ks.setKeyEntry("key", key, keyPassword.toCharArray(), certChain.toArray(new Certificate[certChain.size()]));
-
-            // Set up key manager factory to use our key store
-            KeyManagerFactory kmf = KeyManagerFactory.getInstance(algorithm);
-            kmf.init(ks, keyPassword.toCharArray());
-
-            // Initialize the SSLContext to work with our key managers.
-            ctx = SSLContext.getInstance(PROTOCOL);
-            ctx.init(kmf.getKeyManagers(), null, null);
-
-            sessCtx = ctx.getServerSessionContext();
-            if (sessionCacheSize > 0) {
-                sessCtx.setSessionCacheSize((int) Math.min(sessionCacheSize, Integer.MAX_VALUE));
-            }
-            if (sessionTimeout > 0) {
-                sessCtx.setSessionTimeout((int) Math.min(sessionTimeout, Integer.MAX_VALUE));
-            }
-        } catch (Exception e) {
-            throw new SSLException("failed to initialize the server-side SSL context", e);
-        }
-
-        client = false;
+    JdkSslContext(SslBufferPool bufferPool, Iterable<String> ciphers) {
+        super(bufferPool);
+        cipherSuites = toCipherSuiteArray(ciphers);
+        unmodifiableCipherSuites = Collections.unmodifiableList(Arrays.asList(cipherSuites));
     }
 
-    /**
-     * Creates a new factory that creates a new client-side {@link SSLEngine}.
-     */
-    public JdkSslContext(
-            SslBufferPool bufPool, File certChainFile, TrustManagerFactory trustManagerFactory,
-            Iterable<String> ciphers, ApplicationProtocolSelector nextProtocolSelector,
-            long sessionCacheSize, long sessionTimeout) throws SSLException {
+    public abstract SSLContext context();
 
-        if (nextProtocolSelector != null) {
-            throw new SSLException("NPN/ALPN unsupported: " + nextProtocolSelector);
+    public final SSLSessionContext sessionContext() {
+        if (isServer()) {
+            return context().getServerSessionContext();
+        } else {
+            return context().getClientSessionContext();
         }
-
-        this.ciphers = toCipherSuiteArray(ciphers);
-        unmodifiableCiphers = Collections.unmodifiableList(Arrays.asList(this.ciphers));
-        this.bufPool = bufPool == null? new SslBufferPool(false) : bufPool;
-
-        try {
-            if (certChainFile == null) {
-                ctx = SSLContext.getInstance(PROTOCOL);
-                if (trustManagerFactory == null) {
-                    ctx.init(null, null, null);
-                } else {
-                    trustManagerFactory.init((KeyStore) null);
-                    ctx.init(null, trustManagerFactory.getTrustManagers(), null);
-                }
-            } else {
-                KeyStore ks = KeyStore.getInstance("JKS");
-                ks.load(null, null);
-                CertificateFactory cf = CertificateFactory.getInstance("X.509");
-
-                for (ChannelBuffer buf: PemReader.readCertificates(certChainFile)) {
-                    X509Certificate cert = (X509Certificate) cf.generateCertificate(new ChannelBufferInputStream(buf));
-                    X500Principal principal = cert.getSubjectX500Principal();
-                    ks.setCertificateEntry(principal.getName("RFC2253"), cert);
-                }
-
-                // Set up trust manager factory to use our key store.
-                if (trustManagerFactory == null) {
-                    trustManagerFactory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-                }
-                trustManagerFactory.init(ks);
-
-                // Initialize the SSLContext to work with the trust managers.
-                ctx = SSLContext.getInstance(PROTOCOL);
-                ctx.init(null, trustManagerFactory.getTrustManagers(), null);
-            }
-
-            sessCtx = ctx.getServerSessionContext();
-            if (sessionCacheSize > 0) {
-                sessCtx.setSessionCacheSize((int) Math.min(sessionCacheSize, Integer.MAX_VALUE));
-            }
-            if (sessionTimeout > 0) {
-                sessCtx.setSessionTimeout((int) Math.min(sessionTimeout, Integer.MAX_VALUE));
-            }
-        } catch (Exception e) {
-            throw new SSLException("failed to initialize the server-side SSL context", e);
-        }
-
-        client = true;
     }
 
     @Override
-    public boolean isClient() {
-        return client;
+    public final List<String> cipherSuites() {
+        return unmodifiableCipherSuites;
+    }
+
+
+    @Override
+    public final long sessionCacheSize() {
+        return sessionContext().getSessionCacheSize();
     }
 
     @Override
-    public List<String> cipherSuites() {
-        return unmodifiableCiphers;
+    public final long sessionTimeout() {
+        return sessionContext().getSessionTimeout();
     }
 
     @Override
-    public long sessionCacheSize() {
-        return sessCtx.getSessionCacheSize();
-    }
-
-    @Override
-    public long sessionTimeout() {
-        return sessCtx.getSessionTimeout();
-    }
-
-    @Override
-    public ApplicationProtocolSelector nextProtocolSelector() {
-        return null;
-    }
-
-    @Override
-    public List<String> nextProtocols() {
-        return Collections.emptyList();
-    }
-
-    /**
-     * Returns the {@link SSLContext} object of this factory.
-     */
-    public SSLContext context() {
-        return ctx;
-    }
-
-    @Override
-    public SslBufferPool bufferPool() {
-        return bufPool;
-    }
-
-    @Override
-    public SSLEngine newEngine() {
-        SSLEngine engine = ctx.createSSLEngine();
-        engine.setEnabledCipherSuites(ciphers);
-        engine.setUseClientMode(client);
+    public final SSLEngine newEngine() {
+        SSLEngine engine = context().createSSLEngine();
+        engine.setEnabledCipherSuites(cipherSuites);
+        engine.setUseClientMode(isClient());
         return engine;
     }
 
     @Override
-    public SSLEngine newEngine(String host, int port) {
-        SSLEngine engine = ctx.createSSLEngine(host, port);
-        engine.setEnabledCipherSuites(ciphers);
-        engine.setUseClientMode(client);
+    public final SSLEngine newEngine(String host, int port) {
+        SSLEngine engine = context().createSSLEngine(host, port);
+        engine.setEnabledCipherSuites(cipherSuites);
+        engine.setUseClientMode(isClient());
         return engine;
     }
 
     @Override
-    public SslHandler newHandler() {
-        return new SslHandler(newEngine(), bufPool);
+    public final SslHandler newHandler() {
+        return new SslHandler(newEngine(), bufferPool());
     }
+
     @Override
-    public SslHandler newHandler(String host, int port) {
-        return new SslHandler(newEngine(host, port), bufPool);
+    public final SslHandler newHandler(String host, int port) {
+        return new SslHandler(newEngine(host, port), bufferPool());
     }
 
     private static String[] toCipherSuiteArray(Iterable<String> ciphers) {
