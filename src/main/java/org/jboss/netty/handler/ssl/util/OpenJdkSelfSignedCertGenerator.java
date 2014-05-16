@@ -14,7 +14,7 @@
  * under the License.
  */
 
-package org.jboss.netty.handler.ssl;
+package org.jboss.netty.handler.ssl.util;
 
 import sun.security.x509.AlgorithmId;
 import sun.security.x509.CertificateAlgorithmId;
@@ -45,7 +45,7 @@ final class OpenJdkSelfSignedCertGenerator {
         info.set(X509CertInfo.SERIAL_NUMBER, new CertificateSerialNumber(new BigInteger(64, random)));
         info.set(X509CertInfo.SUBJECT, new CertificateSubjectName(owner));
         info.set(X509CertInfo.ISSUER, new CertificateIssuerName(owner));
-        info.set(X509CertInfo.VALIDITY, new CertificateValidity(KeyUtil.NOT_BEFORE, KeyUtil.NOT_AFTER));
+        info.set(X509CertInfo.VALIDITY, new CertificateValidity(SelfSignedCertificate.NOT_BEFORE, SelfSignedCertificate.NOT_AFTER));
         info.set(X509CertInfo.KEY, new CertificateX509Key(keypair.getPublic()));
         info.set(X509CertInfo.ALGORITHM_ID,
                 new CertificateAlgorithmId(new AlgorithmId(AlgorithmId.sha1WithRSAEncryption_oid)));
@@ -60,7 +60,7 @@ final class OpenJdkSelfSignedCertGenerator {
         cert.sign(key, "SHA1withRSA");
         cert.verify(keypair.getPublic());
 
-        return KeyUtil.newSelfSignedCertificate(fqdn, key, cert);
+        return SelfSignedCertificate.newSelfSignedCertificate(fqdn, key, cert);
     }
 
     private OpenJdkSelfSignedCertGenerator() { }

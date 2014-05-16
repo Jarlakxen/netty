@@ -14,149 +14,104 @@
  * under the License.
  */
 
-package org.jboss.netty.handler.ssl;
+package org.jboss.netty.handler.ssl.util;
 
-import org.jboss.netty.buffer.ChannelBuffer;
 import org.jboss.netty.buffer.ChannelBuffers;
 import org.jboss.netty.handler.codec.base64.Base64;
 import org.jboss.netty.logging.InternalLogger;
 import org.jboss.netty.logging.InternalLoggerFactory;
 import org.jboss.netty.util.CharsetUtil;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
-import java.security.KeyStore;
+import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
 import java.security.SecureRandom;
 import java.security.cert.CertificateEncodingException;
+import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
-import java.util.ArrayList;
 import java.util.Date;
-import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
- * Reads a PEM file and converts it into a {@link KeyStore}.
+ * Generates a temporary self-signed certificate for testing purposes.
+ * A X.509 certificate file and a RSA private key file are generated in a system's temporary directory
+ * using {@link java.io.File#createTempFile(String, String)}, and they are deleted when the JVM exits
+ * using {@link java.io.File#deleteOnExit()}.
+ * <p>
+ * At first, this method tries to use OpenJDK's X.509 implementation ({@code sun.security.x509}).
+ * If it fails, it secondly tries to use <a href="http://www.bouncycastle.org/">Bouncy Castle</a>.
+ * </p>
  */
-public final class KeyUtil {
+public final class SelfSignedCertificate {
 
-    private static final InternalLogger logger = InternalLoggerFactory.getInstance(KeyUtil.class);
-
-    private static final Pattern CERT_PATTERN = Pattern.compile(
-            "-+BEGIN\\s+.*CERTIFICATE[^-]*-+(?:\\s|\\r|\\n)+" + // Header
-                    "([a-z0-9+/=\\r\\n]+)" +                    // Base64 text
-                    "-+END\\s+.*CERTIFICATE[^-]*-+",            // Footer
-            Pattern.CASE_INSENSITIVE);
-    private static final Pattern KEY_PATTERN = Pattern.compile(
-            "-+BEGIN\\s+.*PRIVATE\\s+KEY[^-]*-+(?:\\s|\\r|\\n)+" + // Header
-                    "([a-z0-9+/=\\r\\n]+)" +                       // Base64 text
-                    "-+END\\s+.*PRIVATE\\s+KEY[^-]*-+",            // Footer
-            Pattern.CASE_INSENSITIVE);
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(SelfSignedCertificate.class);
 
     /** Current time minus 1 year, just in case software clock goes back due to time synchronization */
     static final Date NOT_BEFORE = new Date(System.currentTimeMillis() - 86400000L * 365);
     /** The maximum possible value in X.509 specification: 9999-12-31 23:59:59 */
     static final Date NOT_AFTER = new Date(253402300799000L);
 
-    public static ChannelBuffer[] readCertificates(String filePath) throws IOException {
-        return readCertificates(new FileInputStream(filePath));
+    private final File certificate;
+    private final File privateKey;
+
+    public SelfSignedCertificate() throws CertificateException {
+        this("example.com");
     }
 
-    public static ChannelBuffer[] readCertificates(InputStream in) throws IOException {
-        String content = readContent(in);
-
-        List<ChannelBuffer> certs = new ArrayList<ChannelBuffer>();
-        Matcher m = CERT_PATTERN.matcher(content);
-        int start = 0;
-        for (;;) {
-            if (!m.find(start)) {
-                break;
-            }
-
-            certs.add(Base64.decode(ChannelBuffers.copiedBuffer(m.group(1), CharsetUtil.US_ASCII)));
-            start = m.end();
-        }
-
-        if (certs.isEmpty()) {
-            throw new IllegalArgumentException("found no certificates");
-        }
-
-        return certs.toArray(new ChannelBuffer[certs.size()]);
-    }
-
-    public static ChannelBuffer readPrivateKey(String filePath) throws IOException {
-        return readPrivateKey(new FileInputStream(filePath));
-    }
-
-    public static ChannelBuffer readPrivateKey(InputStream in) throws IOException {
-        String content = readContent(in);
-
-        Matcher m = KEY_PATTERN.matcher(content);
-        if (!m.find()) {
-            throw new IllegalArgumentException("found no private key");
-        }
-
-        return Base64.decode(ChannelBuffers.copiedBuffer(m.group(1), CharsetUtil.US_ASCII));
-    }
-
-    public static String[] newSelfSignedCertificate() {
-        return newSelfSignedCertificate("example.com");
-    }
-
-    /**
-     * Generates a temporary self-signed certificate for testing purposes.
-     * A X.509 certificate file and a RSA private key file are generated in a system's temporary directory
-     * using {@link File#createTempFile(String, String)}, and they are deleted when the JVM exits
-     * using {@link File#deleteOnExit()}.
-     * <p>
-     * At first, this method tries to use OpenJDK's X.509 implementation ({@code sun.security.x509}).
-     * If it fails, it secondly tries to use <a href="http://www.bouncycastle.org/">Bouncy Castle</a>.
-     * </p>
-     *
-     * @return a {@link String} array whose 0th element is the path to the X.509 certificate file and
-     *         whose 1st element is the path to the RSA private key file
-     *
-     * @throws UnsupportedOperationException if both OpenJDK proprietary API and Bouncy Castle are unavailable
-     */
-    public static String[] newSelfSignedCertificate(String fqdn) {
+    public SelfSignedCertificate(String fqdn) throws CertificateException {
         // Bypass entrophy collection by using insecure random generator.
         // We just want to generate it without any delay because it's for testing purposes only.
-        SecureRandom random = ThreadLocalInsecureRandom.current();
+        this(fqdn, ThreadLocalInsecureRandom.current(), 1024);
+    }
 
-        // Generate a 1024-bit RSA key pair.
+    public SelfSignedCertificate(String fqdn, SecureRandom random, int bits) throws CertificateException {
+        // Generate an RSA key pair.
         final KeyPair keypair;
         try {
             KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
-            keyGen.initialize(1024, random);
+            keyGen.initialize(bits, random);
             keypair = keyGen.generateKeyPair();
-        } catch (Exception e) {
+        } catch (NoSuchAlgorithmException e) {
             // Should not reach here because every Java implementation must have RSA key pair generator.
-            throw new UnsupportedOperationException("no provide succeeded to generate an RSA key pair", e);
+            throw new Error(e);
         }
 
+        String[] paths;
         try {
             // Try the OpenJDK's proprietary implementation.
-            return OpenJdkSelfSignedCertGenerator.generate(fqdn, keypair, random);
+            paths = OpenJdkSelfSignedCertGenerator.generate(fqdn, keypair, random);
         } catch (Throwable t) {
             logger.debug("Failed to generate a self-signed X.509 certificate using sun.security.x509:", t);
             try {
                 // Try Bouncy Castle if the current JVM didn't have sun.security.x509.
-                return BouncyCastleSelfSignedCertGenerator.generate(fqdn, keypair, random);
+                paths = BouncyCastleSelfSignedCertGenerator.generate(fqdn, keypair, random);
             } catch (Throwable t2) {
                 logger.debug("Failed to generate a self-signed X.509 certificate using Bouncy Castle:", t2);
-                throw new UnsupportedOperationException(
+                throw new CertificateException(
                         "No provider succeeded to generate a self-signed certificate. " +
                                 "See debug log for the root cause.");
             }
         }
+
+        certificate = new File(paths[0]);
+        privateKey = new File(paths[1]);
+    }
+
+    public File certificate() {
+        return certificate;
+    }
+
+    public File privateKey() {
+        return privateKey;
+    }
+
+    public void delete() {
+        safeDelete(certificate);
+        safeDelete(privateKey);
     }
 
     static String[] newSelfSignedCertificate(
@@ -206,28 +161,6 @@ public final class KeyUtil {
         return new String[] { certFile.getPath(), keyFile.getPath() };
     }
 
-    private static String readContent(InputStream in) throws IOException {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        try {
-            byte[] buf = new byte[8192];
-            for (;;) {
-                int ret = in.read(buf);
-                if (ret < 0) {
-                    break;
-                }
-                out.write(buf, 0, ret);
-            }
-        } finally {
-            try {
-                in.close();
-            } catch (IOException e) {
-                logger.warn("Failed to close a stream.", e);
-            }
-        }
-
-        return out.toString(CharsetUtil.US_ASCII.name());
-    }
-
     private static void safeDelete(File certFile) {
         if (!certFile.delete()) {
             logger.warn("Failed to delete a file: " + certFile);
@@ -241,6 +174,4 @@ public final class KeyUtil {
             logger.warn("Failed to close a file: " + keyFile, e);
         }
     }
-
-    private KeyUtil() { }
 }

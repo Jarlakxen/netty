@@ -31,47 +31,30 @@ import org.jboss.netty.logging.InternalLogger;
 import org.jboss.netty.logging.InternalLoggerFactory;
 import org.jboss.netty.util.TestUtil;
 import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameters;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.Collection;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.*;
 
-@RunWith(Parameterized.class)
-public abstract class AbstractSocketSslGreetingTest {
-    static final InternalLogger logger =
-            InternalLoggerFactory.getInstance(AbstractSocketSslGreetingTest.class);
+public class SocketSslGreetingTest extends SslTest {
 
-    @Parameters(name = "{index}: serverCtx = {0}, clientCtx = {1}")
-    public static Collection<SslContext[]> sslContexts() throws Exception {
-        return AbstractSocketSslEchoTest.sslContexts();
-    }
+    static final InternalLogger logger = InternalLoggerFactory.getInstance(SocketSslGreetingTest.class);
 
     private final ChannelBuffer greeting = ChannelBuffers.wrappedBuffer(new byte[] {'a'});
 
-    protected abstract ChannelFactory newServerSocketChannelFactory(Executor executor);
-    protected abstract ChannelFactory newClientSocketChannelFactory(Executor executor);
-
-    private final SslContext serverCtx;
-    private final SslContext clientCtx;
-
-    protected AbstractSocketSslGreetingTest(SslContext serverCtx, SslContext clientCtx) {
-        this.serverCtx = serverCtx;
-        this.clientCtx = clientCtx;
+    public SocketSslGreetingTest(
+            SslContext serverCtx, SslContext clientCtx,
+            ChannelFactory serverChannelFactory, ChannelFactory clientChannelFactory) {
+        super(serverCtx, clientCtx, serverChannelFactory, clientChannelFactory);
     }
 
     @Test
     public void testSslEcho() throws Throwable {
-        ServerBootstrap sb = new ServerBootstrap(newServerSocketChannelFactory(Executors.newCachedThreadPool()));
-        ClientBootstrap cb = new ClientBootstrap(newClientSocketChannelFactory(Executors.newCachedThreadPool()));
+        ServerBootstrap sb = new ServerBootstrap(serverChannelFactory);
+        ClientBootstrap cb = new ClientBootstrap(clientChannelFactory);
 
         ServerHandler sh = new ServerHandler();
         ClientHandler ch = new ClientHandler();
@@ -112,10 +95,6 @@ public abstract class AbstractSocketSslGreetingTest {
         sh.channel.close().awaitUninterruptibly();
         cc.close().awaitUninterruptibly();
         sc.close().awaitUninterruptibly();
-        cb.shutdown();
-        sb.shutdown();
-        cb.releaseExternalResources();
-        sb.releaseExternalResources();
 
         if (sh.exception.get() != null && !(sh.exception.get() instanceof IOException)) {
             throw sh.exception.get();

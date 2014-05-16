@@ -28,6 +28,7 @@ import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLSessionContext;
 import javax.net.ssl.TrustManagerFactory;
 import javax.security.auth.x500.X500Principal;
+import java.io.File;
 import java.security.KeyFactory;
 import java.security.KeyStore;
 import java.security.PrivateKey;
@@ -98,15 +99,15 @@ public final class JdkSslContext extends SslContext {
      */
     public JdkSslContext(
             SslBufferPool bufPool,
-            String certChainPath, String keyPath, String keyPassword,
+            File certChainFile, File keyFile, String keyPassword,
             Iterable<String> ciphers, Iterable<String> nextProtocols,
             long sessionCacheSize, long sessionTimeout) throws SSLException {
 
-        if (certChainPath == null) {
-            throw new NullPointerException("certChainPath");
+        if (certChainFile == null) {
+            throw new NullPointerException("certChainFile");
         }
-        if (keyPath == null) {
-            throw new NullPointerException("keyPath");
+        if (keyFile == null) {
+            throw new NullPointerException("keyFile");
         }
 
         if (keyPassword == null) {
@@ -133,7 +134,7 @@ public final class JdkSslContext extends SslContext {
             KeyFactory rsaKF = KeyFactory.getInstance("RSA");
             KeyFactory dsaKF = KeyFactory.getInstance("DSA");
 
-            ChannelBuffer encodedKeyBuf = KeyUtil.readPrivateKey(keyPath);
+            ChannelBuffer encodedKeyBuf = PemReader.readPrivateKey(keyFile);
             byte[] encodedKey = new byte[encodedKeyBuf.readableBytes()];
             encodedKeyBuf.readBytes(encodedKey);
             PKCS8EncodedKeySpec encodedKeySpec = new PKCS8EncodedKeySpec(encodedKey);
@@ -146,7 +147,7 @@ public final class JdkSslContext extends SslContext {
             }
 
             List<Certificate> certChain = new ArrayList<Certificate>();
-            for (ChannelBuffer buf: KeyUtil.readCertificates(certChainPath)) {
+            for (ChannelBuffer buf: PemReader.readCertificates(certChainFile)) {
                 certChain.add(cf.generateCertificate(new ChannelBufferInputStream(buf)));
             }
 
@@ -178,7 +179,7 @@ public final class JdkSslContext extends SslContext {
      * Creates a new factory that creates a new client-side {@link SSLEngine}.
      */
     public JdkSslContext(
-            SslBufferPool bufPool, String certChainPath, TrustManagerFactory trustManagerFactory,
+            SslBufferPool bufPool, File certChainFile, TrustManagerFactory trustManagerFactory,
             Iterable<String> ciphers, ApplicationProtocolSelector nextProtocolSelector,
             long sessionCacheSize, long sessionTimeout) throws SSLException {
 
@@ -191,7 +192,7 @@ public final class JdkSslContext extends SslContext {
         this.bufPool = bufPool == null? new SslBufferPool(false) : bufPool;
 
         try {
-            if (certChainPath == null) {
+            if (certChainFile == null) {
                 ctx = SSLContext.getInstance(PROTOCOL);
                 if (trustManagerFactory == null) {
                     ctx.init(null, null, null);
@@ -204,7 +205,7 @@ public final class JdkSslContext extends SslContext {
                 ks.load(null, null);
                 CertificateFactory cf = CertificateFactory.getInstance("X.509");
 
-                for (ChannelBuffer buf: KeyUtil.readCertificates(certChainPath)) {
+                for (ChannelBuffer buf: PemReader.readCertificates(certChainFile)) {
                     X509Certificate cert = (X509Certificate) cf.generateCertificate(new ChannelBufferInputStream(buf));
                     X500Principal principal = cert.getSubjectX500Principal();
                     ks.setCertificateEntry(principal.getName("RFC2253"), cert);
@@ -286,8 +287,20 @@ public final class JdkSslContext extends SslContext {
     }
 
     @Override
+    public SSLEngine newEngine(String host, int port) {
+        SSLEngine engine = ctx.createSSLEngine(host, port);
+        engine.setEnabledCipherSuites(ciphers);
+        engine.setUseClientMode(client);
+        return engine;
+    }
+
+    @Override
     public SslHandler newHandler() {
         return new SslHandler(newEngine(), bufPool);
+    }
+    @Override
+    public SslHandler newHandler(String host, int port) {
+        return new SslHandler(newEngine(host, port), bufPool);
     }
 
     private static String[] toCipherSuiteArray(Iterable<String> ciphers) {

@@ -92,23 +92,23 @@ public final class OpenSslContext extends SslContext {
 
     public OpenSslContext(
             SslBufferPool bufPool,
-            String certChainPath, String keyPath, String keyPassword,
+            File certChainFile, File keyFile, String keyPassword,
             Iterable<String> ciphers, Iterable<String> nextProtocols,
             long sessionCacheSize, long sessionTimeout) throws SSLException {
 
         OpenSsl.ensureAvailability();
 
-        if (certChainPath == null) {
-            throw new NullPointerException("certChainPath");
+        if (certChainFile == null) {
+            throw new NullPointerException("certChainFile");
         }
-        if (!new File(certChainPath).isFile()) {
-            throw new IllegalArgumentException("certChainPath is not a file: " + certChainPath);
+        if (!certChainFile.isFile()) {
+            throw new IllegalArgumentException("certChainFile is not a file: " + certChainFile);
         }
-        if (keyPath == null) {
+        if (keyFile == null) {
             throw new NullPointerException("keyPath");
         }
-        if (!new File(keyPath).isFile()) {
-            throw new IllegalArgumentException("keyPath is not a file: " + keyPath);
+        if (!keyFile.isFile()) {
+            throw new IllegalArgumentException("keyPath is not a file: " + keyFile);
         }
         if (ciphers == null) {
             ciphers = DEFAULT_CIPHERS;
@@ -193,22 +193,22 @@ public final class OpenSslContext extends SslContext {
                 /* Load the certificate file and private key. */
                 try {
                     if (!SSLContext.setCertificate(
-                            ctx, certChainPath, keyPath, keyPassword, SSL.SSL_AIDX_RSA)) {
+                            ctx, certChainFile.getPath(), keyFile.getPath(), keyPassword, SSL.SSL_AIDX_RSA)) {
                         throw new SSLException("failed to set certificate: " +
-                                certChainPath + " and " + keyPath + " (" + SSL.getLastError() + ')');
+                                certChainFile + " and " + keyFile + " (" + SSL.getLastError() + ')');
                     }
                 } catch (SSLException e) {
                     throw e;
                 } catch (Exception e) {
-                    throw new SSLException("failed to set certificate: " + certChainPath + " and " + keyPath, e);
+                    throw new SSLException("failed to set certificate: " + certChainFile + " and " + keyFile, e);
                 }
 
                 /* Load the certificate chain. We must skip the first cert since it was loaded above. */
-                if (!SSLContext.setCertificateChainFile(ctx, certChainPath, true)) {
+                if (!SSLContext.setCertificateChainFile(ctx, certChainFile.getPath(), true)) {
                     String error = SSL.getLastError();
                     if (!error.startsWith(OpenSsl.IGNORABLE_ERROR_PREFIX)) {
                         throw new SSLException(
-                                "failed to set certificate chain: " + certChainPath + " (" + SSL.getLastError() + ')');
+                                "failed to set certificate chain: " + certChainFile + " (" + SSL.getLastError() + ')');
                     }
                 }
 
@@ -312,8 +312,18 @@ public final class OpenSslContext extends SslContext {
     }
 
     @Override
+    public SSLEngine newEngine(String host, int port) {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public SslHandler newHandler() {
         return new SslHandler(newEngine(), bufPool);
+    }
+
+    @Override
+    public SslHandler newHandler(String host, int port) {
+        return new SslHandler(newEngine(host, port), bufPool);
     }
 
     public void setTicketKeys(byte[] keys) {

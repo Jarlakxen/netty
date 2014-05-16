@@ -27,91 +27,35 @@ import org.jboss.netty.channel.ChannelStateEvent;
 import org.jboss.netty.channel.ExceptionEvent;
 import org.jboss.netty.channel.MessageEvent;
 import org.jboss.netty.channel.SimpleChannelUpstreamHandler;
-import org.jboss.netty.handler.execution.ExecutionHandler;
-import org.jboss.netty.handler.execution.OrderedMemoryAwareThreadPoolExecutor;
 import org.jboss.netty.logging.InternalLogger;
 import org.jboss.netty.logging.InternalLoggerFactory;
 import org.jboss.netty.util.TestUtil;
 import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameters;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
 import java.util.Random;
-import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.*;
 
-// TODO: Merge all subclasses and test parameters using Parameterized.
-@RunWith(Parameterized.class)
-public abstract class AbstractSocketSslEchoTest {
-    static final InternalLogger logger = InternalLoggerFactory.getInstance(AbstractSocketSslEchoTest.class);
+public class SocketSslEchoTest extends SslTest {
 
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(SocketSslEchoTest.class);
     private static final Random random = new Random();
-    static final byte[] data = new byte[1048576];
 
-    private static final String CERT_PATH;
-    private static final String KEY_PATH;
+    static final byte[] data = new byte[1048576];
 
     static {
         random.nextBytes(data);
-
-        String[] paths = KeyUtil.newSelfSignedCertificate();
-        CERT_PATH = paths[0];
-        KEY_PATH = paths[1];
     }
 
-    @Parameters(name = "{index}: serverCtx = {0}, clientCtx = {1}")
-    public static Collection<SslContext[]> sslContexts() throws Exception {
-        // Populate the permutations.
-        List<SslContext[]> params = new ArrayList<SslContext[]>();
-
-        List<SslContext> serverContexts = new ArrayList<SslContext>();
-        serverContexts.add(new JdkSslContext(null, CERT_PATH, KEY_PATH, null, null, null, 0, 0));
-
-        List<SslContext> clientContexts = new ArrayList<SslContext>();
-        clientContexts.add(new JdkSslContext(null, CERT_PATH, null, null, null, 0, 0));
-
-        boolean hasOpenSsl = OpenSsl.isAvailable();
-        if (hasOpenSsl) {
-            serverContexts.add(new OpenSslContext(null, CERT_PATH, KEY_PATH, null, null, null, 0, 0));
-
-            // TODO: Client mode is not supported yet.
-            // clientContexts.add(new OpenSslContext(null, CERT_PATH, null, null, null, 0, 0));
-        } else {
-            logger.warn("OpenSSL is unavailable and thus will not be tested.", OpenSsl.unavailabilityCause());
-        }
-
-        for (SslContext sctx: serverContexts) {
-            for (SslContext cctx: clientContexts) {
-                params.add(new SslContext[] { sctx, cctx });
-            }
-        }
-
-        return params;
-    }
-
-    private final SslContext serverCtx;
-    private final SslContext clientCtx;
-
-    protected AbstractSocketSslEchoTest(SslContext serverCtx, SslContext clientCtx) {
-        this.serverCtx = serverCtx;
-        this.clientCtx = clientCtx;
-    }
-
-    protected abstract ChannelFactory newServerSocketChannelFactory(Executor executor);
-    protected abstract ChannelFactory newClientSocketChannelFactory(Executor executor);
-
-    protected boolean isExecutorRequired() {
-        return false;
+    public SocketSslEchoTest(
+            SslContext serverCtx, SslContext clientCtx,
+            ChannelFactory serverChannelFactory, ChannelFactory clientChannelFactory) {
+        super(serverCtx, clientCtx, serverChannelFactory, clientChannelFactory);
     }
 
     @Test
@@ -138,8 +82,8 @@ public abstract class AbstractSocketSslEchoTest {
     private void testSslEcho(
             boolean serverUsesDelegatedTaskExecutor, boolean clientUsesDelegatedTaskExecutor) throws Throwable {
         ExecutorService delegatedTaskExecutor = Executors.newCachedThreadPool();
-        ServerBootstrap sb = new ServerBootstrap(newServerSocketChannelFactory(Executors.newCachedThreadPool()));
-        ClientBootstrap cb = new ClientBootstrap(newClientSocketChannelFactory(Executors.newCachedThreadPool()));
+        ServerBootstrap sb = new ServerBootstrap(serverChannelFactory);
+        ClientBootstrap cb = new ClientBootstrap(clientChannelFactory);
 
         EchoHandler sh = new EchoHandler(true);
         EchoHandler ch = new EchoHandler(false);
@@ -165,13 +109,6 @@ public abstract class AbstractSocketSslEchoTest {
             cb.getPipeline().addFirst("ssl", clientCtx.newHandler());
         }
         cb.getPipeline().addLast("handler", ch);
-
-        ExecutorService eventExecutor = null;
-        if (isExecutorRequired()) {
-            eventExecutor = new OrderedMemoryAwareThreadPoolExecutor(16, 0, 0);
-            sb.getPipeline().addFirst("executor", new ExecutionHandler(eventExecutor));
-            cb.getPipeline().addFirst("executor", new ExecutionHandler(eventExecutor));
-        }
 
         Channel sc = sb.bind(new InetSocketAddress(0));
         int port = ((InetSocketAddress) sc.getLocalAddress()).getPort();
@@ -235,15 +172,8 @@ public abstract class AbstractSocketSslEchoTest {
         sh.channel.close().awaitUninterruptibly();
         ch.channel.close().awaitUninterruptibly();
         sc.close().awaitUninterruptibly();
-        cb.shutdown();
-        sb.shutdown();
-        cb.releaseExternalResources();
-        sb.releaseExternalResources();
         delegatedTaskExecutor.shutdown();
 
-        if (eventExecutor != null) {
-            eventExecutor.shutdown();
-        }
         if (sh.exception.get() != null && !(sh.exception.get() instanceof IOException)) {
             throw sh.exception.get();
         }

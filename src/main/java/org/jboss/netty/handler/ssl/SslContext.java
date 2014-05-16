@@ -19,6 +19,7 @@ package org.jboss.netty.handler.ssl;
 import javax.net.ssl.SSLEngine;
 import javax.net.ssl.SSLException;
 import javax.net.ssl.TrustManagerFactory;
+import java.io.File;
 import java.util.List;
 
 /**
@@ -39,28 +40,28 @@ public abstract class SslContext {
         return JdkSslContext.class;
     }
 
-    public static SslContext newServerContext(String certChainPath, String keyPath) throws SSLException {
-        return newServerContext(null, certChainPath, keyPath, null, null, null, 0, 0);
+    public static SslContext newServerContext(File certChainFile, File keyFile) throws SSLException {
+        return newServerContext(null, certChainFile, keyFile, null, null, null, 0, 0);
     }
 
     public static SslContext newServerInstance(
-            String certChainPath, String keyPath, String keyPassword) throws SSLException {
-        return newServerContext(null, certChainPath, keyPath, keyPassword, null, null, 0, 0);
+            File certChainFile, File keyFile, String keyPassword) throws SSLException {
+        return newServerContext(null, certChainFile, keyFile, keyPassword, null, null, 0, 0);
     }
 
     public static SslContext newServerContext(
             SslBufferPool bufPool,
-            String certChainPath, String keyPath, String keyPassword,
+            File certChainFile, File keyFile, String keyPassword,
             Iterable<String> ciphers, Iterable<String> nextProtocols,
             long sessionCacheSize, long sessionTimeout) throws SSLException {
 
         if (OpenSsl.isAvailable()) {
             return new OpenSslContext(
-                    bufPool, certChainPath, keyPath, keyPassword,
+                    bufPool, certChainFile, keyFile, keyPassword,
                     ciphers, nextProtocols, sessionCacheSize, sessionTimeout);
         } else {
             return new JdkSslContext(
-                    bufPool, certChainPath, keyPath, keyPassword,
+                    bufPool, certChainFile, keyFile, keyPassword,
                     ciphers, nextProtocols, sessionCacheSize, sessionTimeout);
         }
     }
@@ -69,8 +70,8 @@ public abstract class SslContext {
         return newClientContext(null, null, null, null, null, 0, 0);
     }
 
-    public static SslContext newClientContext(String certChainPath) throws SSLException {
-        return newClientContext(null, certChainPath, null, null, null, 0, 0);
+    public static SslContext newClientContext(File certChainFile) throws SSLException {
+        return newClientContext(null, certChainFile, null, null, null, 0, 0);
     }
 
     public static SslContext newClientContext(TrustManagerFactory trustManagerFactory) throws SSLException {
@@ -78,17 +79,17 @@ public abstract class SslContext {
     }
 
     public static SslContext newClientContext(
-            String certChainPath, TrustManagerFactory trustManagerFactory) throws SSLException {
-        return newClientContext(null, certChainPath, trustManagerFactory, null, null, 0, 0);
+            File certChainFile, TrustManagerFactory trustManagerFactory) throws SSLException {
+        return newClientContext(null, certChainFile, trustManagerFactory, null, null, 0, 0);
     }
 
     public static SslContext newClientContext(
             SslBufferPool bufPool,
-            String certChainPath, TrustManagerFactory trustManagerFactory,
+            File certChainFile, TrustManagerFactory trustManagerFactory,
             Iterable<String> ciphers, ApplicationProtocolSelector nextProtocolSelector,
             long sessionCacheSize, long sessionTimeout) throws SSLException {
         return new JdkSslContext(
-                bufPool, certChainPath, trustManagerFactory,
+                bufPool, certChainFile, trustManagerFactory,
                 ciphers, nextProtocolSelector, sessionCacheSize, sessionTimeout);
     }
 
@@ -114,5 +115,9 @@ public abstract class SslContext {
 
     public abstract SSLEngine newEngine();
 
+    public abstract SSLEngine newEngine(String host, int port);
+
     public abstract SslHandler newHandler();
+
+    public abstract SslHandler newHandler(String host, int port);
 }

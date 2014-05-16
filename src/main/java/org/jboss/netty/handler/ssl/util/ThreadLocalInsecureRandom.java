@@ -14,7 +14,7 @@
  * under the License.
  */
 
-package org.jboss.netty.handler.ssl;
+package org.jboss.netty.handler.ssl.util;
 
 import org.jboss.netty.util.internal.ThreadLocalRandom;
 

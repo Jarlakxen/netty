@@ -14,7 +14,7 @@
  * under the License.
  */
 
-package org.jboss.netty.handler.ssl;
+package org.jboss.netty.handler.ssl.util;
 
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.cert.X509CertificateHolder;
@@ -42,14 +42,14 @@ final class BouncyCastleSelfSignedCertGenerator {
         // Prepare the information required for generating an X.509 certificate.
         X500Name owner = new X500Name("CN=" + fqdn);
         X509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
-                owner, new BigInteger(64, random), KeyUtil.NOT_BEFORE, KeyUtil.NOT_AFTER, owner, keypair.getPublic());
+                owner, new BigInteger(64, random), SelfSignedCertificate.NOT_BEFORE, SelfSignedCertificate.NOT_AFTER, owner, keypair.getPublic());
 
         ContentSigner signer = new JcaContentSignerBuilder("SHA256WithRSAEncryption").build(key);
         X509CertificateHolder certHolder = builder.build(signer);
         X509Certificate cert = new JcaX509CertificateConverter().setProvider(PROVIDER).getCertificate(certHolder);
         cert.verify(keypair.getPublic());
 
-        return KeyUtil.newSelfSignedCertificate(fqdn, key, cert);
+        return SelfSignedCertificate.newSelfSignedCertificate(fqdn, key, cert);
     }
 
     private BouncyCastleSelfSignedCertGenerator() { }
