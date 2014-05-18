@@ -70,8 +70,8 @@ public class AsynchronousDnsResolverTest {
 
     private final ChannelFactory<DatagramChannel> factory = new ChannelFactory<DatagramChannel>() {
         @Override
-        public DatagramChannel newChannel(EventLoop eventLoop) {
-            return new NioDatagramChannel(eventLoop);
+        public DatagramChannel newChannel() {
+            return new NioDatagramChannel();
         }
     };
 

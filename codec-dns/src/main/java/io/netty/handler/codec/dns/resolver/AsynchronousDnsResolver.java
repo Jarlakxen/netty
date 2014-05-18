@@ -80,7 +80,7 @@ public final class AsynchronousDnsResolver {
      * @param eventLoupGroup
      *            an {@link EventLoopGroup} to use for all DNS server {@link Channel} s.
      */
-    public AsynchronousDnsResolver(ChannelFactory<DatagramChannel> channelFactory,
+	public AsynchronousDnsResolver(ChannelFactory<DatagramChannel> channelFactory,
                                    EventLoopGroup eventLoupGroup, InetSocketAddress... dnsServers) {
         this(createChannel(channelFactory, eventLoupGroup), dnsServers);
     }
@@ -102,14 +102,14 @@ public final class AsynchronousDnsResolver {
         if (eventLoupGroup == null) {
             throw new NullPointerException("eventLoupGroup");
         }
-        DatagramChannel channel = channelFactory.newChannel(eventLoupGroup.next());
+        DatagramChannel channel = channelFactory.newChannel();
         ChannelConfig config = channel.config();
         config.setOption(ChannelOption.DATAGRAM_CHANNEL_ACTIVE_ON_REGISTRATION, true);
         config.setOption(ChannelOption.SO_BROADCAST, true);
         channel.pipeline().addLast("decoder", RESPONSE_DECODER).addLast("encoder", QUERY_ENCODER)
                 .addLast("handler", RESPONSE_HANDLER);
         ChannelPromise regFuture = channel.newPromise();
-        channel.unsafe().register(regFuture);
+        channel.unsafe().register(eventLoupGroup.next(), regFuture);
         return (DatagramChannel) regFuture.syncUninterruptibly().channel();
     }
 
