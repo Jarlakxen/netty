@@ -19,7 +19,6 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelConfig;
 import io.netty.channel.ChannelOutboundBuffer;
 import io.netty.channel.ChannelPipeline;
-import io.netty.channel.EventLoop;
 import io.netty.channel.ServerChannel;
 
 import java.io.IOException;
@@ -33,9 +32,11 @@ import java.util.List;
  */
 public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
 
-    protected AbstractNioMessageChannel(
-            Channel parent, EventLoop eventLoop, SelectableChannel ch, int readInterestOp) {
-        super(parent, eventLoop, ch, readInterestOp);
+    /**
+     * @see {@link AbstractNioChannel#AbstractNioChannel(Channel, SelectableChannel, int)}
+     */
+    protected AbstractNioMessageChannel(Channel parent, SelectableChannel ch, int readInterestOp) {
+        super(parent, ch, readInterestOp);
     }
 
     @Override
@@ -51,6 +52,11 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
         public void read() {
             assert eventLoop().inEventLoop();
             final ChannelConfig config = config();
+            if (!config.isAutoRead() && !isReadPending()) {
+                // ChannelConfig.setAutoRead(false) was called in the meantime
+                removeReadOp();
+                return;
+            }
 
             final int maxMessagesPerRead = config.getMaxMessagesPerRead();
             final ChannelPipeline pipeline = pipeline();
@@ -80,7 +86,7 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                 } catch (Throwable t) {
                     exception = t;
                 }
-                readPending = false;
+                setReadPending(false);
                 int size = readBuf.size();
                 for (int i = 0; i < size; i ++) {
                     pipeline.fireChannelRead(readBuf.get(i));
@@ -111,7 +117,7 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
                 // * The user called Channel.read() or ChannelHandlerContext.read() in channelReadComplete(...) method
                 //
                 // See https://github.com/netty/netty/issues/2254
-                if (!config.isAutoRead() && !readPending) {
+                if (!config.isAutoRead() && !isReadPending()) {
                     removeReadOp();
                 }
             }
@@ -164,5 +170,4 @@ public abstract class AbstractNioMessageChannel extends AbstractNioChannel {
      * @return {@code true} if and only if the message has been written
      */
     protected abstract boolean doWriteMessage(Object msg, ChannelOutboundBuffer in) throws Exception;
-
 }

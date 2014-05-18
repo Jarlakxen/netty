@@ -17,12 +17,12 @@ package io.netty.channel.epoll;
 
 import io.netty.channel.AbstractChannel;
 import io.netty.channel.Channel;
-import io.netty.channel.ChannelException;
 import io.netty.channel.ChannelMetadata;
 import io.netty.channel.EventLoop;
+import io.netty.util.internal.OneTimeTask;
 
-import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.nio.channels.UnresolvedAddressException;
 
 abstract class AbstractEpollChannel extends AbstractChannel {
     private static final ChannelMetadata DATA = new ChannelMetadata(false);
@@ -32,24 +32,16 @@ abstract class AbstractEpollChannel extends AbstractChannel {
     volatile int fd;
     int id;
 
-    AbstractEpollChannel(EventLoop eventLoop, int flag) {
-        this(null, eventLoop, socketFd(), flag, false);
+    AbstractEpollChannel(int fd, int flag) {
+        this(null, fd, flag, false);
     }
 
-    AbstractEpollChannel(Channel parent, EventLoop eventLoop, int fd, int flag, boolean active) {
-        super(parent, eventLoop);
+    AbstractEpollChannel(Channel parent, int fd, int flag, boolean active) {
+        super(parent);
         this.fd = fd;
         readFlag = flag;
         flags |= flag;
         this.active = active;
-    }
-
-    private static int socketFd() {
-        try {
-            return Native.socket();
-        } catch (IOException e) {
-            throw new ChannelException(e);
-        }
     }
 
     @Override
@@ -108,13 +100,52 @@ abstract class AbstractEpollChannel extends AbstractChannel {
     protected void doBeginRead() throws Exception {
         if ((flags & readFlag) == 0) {
             flags |= readFlag;
-            ((EpollEventLoop) eventLoop()).modify(this);
+            modifyEvents();
         }
     }
 
-    protected final void clearEpollIn() {
-        if ((flags & readFlag) != 0) {
+    final void clearEpollIn() {
+        // Only clear if registered with an EventLoop as otherwise
+        if (isRegistered()) {
+            final EventLoop loop = eventLoop();
+            final AbstractEpollUnsafe unsafe = (AbstractEpollUnsafe) unsafe();
+            if (loop.inEventLoop()) {
+                unsafe.clearEpollIn0();
+            } else {
+                // schedule a task to clear the EPOLLIN as it is not safe to modify it directly
+                loop.execute(new OneTimeTask() {
+                    @Override
+                    public void run() {
+                        if (!config().isAutoRead() && !unsafe.readPending) {
+                            // Still no read triggered so clear it now
+                            unsafe.clearEpollIn0();
+                        }
+                    }
+                });
+            }
+        } else  {
+            // The EventLoop is not registered atm so just update the flags so the correct value
+            // will be used once the channel is registered
             flags &= ~readFlag;
+        }
+    }
+
+    protected final void setEpollOut() {
+        if ((flags & Native.EPOLLOUT) == 0) {
+            flags |= Native.EPOLLOUT;
+            modifyEvents();
+        }
+    }
+
+    protected final void clearEpollOut() {
+        if ((flags & Native.EPOLLOUT) != 0) {
+            flags &= ~Native.EPOLLOUT;
+            modifyEvents();
+        }
+    }
+
+    private void modifyEvents() {
+        if (isOpen()) {
             ((EpollEventLoop) eventLoop()).modify(this);
         }
     }
@@ -127,6 +158,12 @@ abstract class AbstractEpollChannel extends AbstractChannel {
 
     @Override
     protected abstract AbstractEpollUnsafe newUnsafe();
+
+    protected static void checkResolvable(InetSocketAddress addr) {
+        if (addr.isUnresolved()) {
+            throw new UnresolvedAddressException();
+        }
+    }
 
     protected abstract class AbstractEpollUnsafe extends AbstractUnsafe {
         protected boolean readPending;
@@ -171,6 +208,13 @@ abstract class AbstractEpollChannel extends AbstractChannel {
 
         private boolean isFlushPending() {
             return (flags & Native.EPOLLOUT) != 0;
+        }
+
+        protected final void clearEpollIn0() {
+            if ((flags & readFlag) != 0) {
+                flags &= ~readFlag;
+                modifyEvents();
+            }
         }
     }
 }

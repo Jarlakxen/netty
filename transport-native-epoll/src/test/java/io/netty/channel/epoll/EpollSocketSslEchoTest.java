@@ -17,6 +17,7 @@ package io.netty.channel.epoll;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
+import io.netty.handler.ssl.SslContext;
 import io.netty.testsuite.transport.TestsuitePermutation;
 import io.netty.testsuite.transport.socket.SocketSslEchoTest;
 
@@ -24,13 +25,13 @@ import java.util.List;
 
 public class EpollSocketSslEchoTest extends SocketSslEchoTest {
 
-    public EpollSocketSslEchoTest(boolean useChunkedWriteHandler,
-                                  boolean useCompositeByteBuf) {
-        super(useChunkedWriteHandler, useCompositeByteBuf);
+    public EpollSocketSslEchoTest(
+            SslContext serverCtx, SslContext clientCtx, boolean useChunkedWriteHandler, boolean useCompositeByteBuf) {
+        super(serverCtx, clientCtx, useChunkedWriteHandler, useCompositeByteBuf);
     }
 
     @Override
     protected List<TestsuitePermutation.BootstrapComboFactory<ServerBootstrap, Bootstrap>> newFactories() {
-        return EpollTestUtils.newFactories();
+        return EpollSocketTestPermutation.INSTANCE.socket();
     }
 }

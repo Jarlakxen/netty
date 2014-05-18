@@ -32,10 +32,12 @@ import io.netty.util.internal.OneTimeTask;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.SocketChannel;
+import java.nio.channels.spi.SelectorProvider;
 
 /**
  * {@link io.netty.channel.socket.SocketChannel} which uses NIO selector based implementation.
@@ -43,10 +45,17 @@ import java.nio.channels.SocketChannel;
 public class NioSocketChannel extends AbstractNioByteChannel implements io.netty.channel.socket.SocketChannel {
 
     private static final ChannelMetadata METADATA = new ChannelMetadata(false);
+    private static final SelectorProvider DEFAULT_SELECTOR_PROVIDER = SelectorProvider.provider();
 
-    private static SocketChannel newSocket() {
+    private static SocketChannel newSocket(SelectorProvider provider) {
         try {
-            return SocketChannel.open();
+            /**
+             *  Use the {@link SelectorProvider} to open {@link SocketChannel} and so remove condition in
+             *  {@link SelectorProvider#provider()} which is called by each SocketChannel.open() otherwise.
+             *
+             *  See <a href="See https://github.com/netty/netty/issues/2308">#2308</a>.
+             */
+            return provider.openSocketChannel();
         } catch (IOException e) {
             throw new ChannelException("Failed to open a socket.", e);
         }
@@ -57,26 +66,32 @@ public class NioSocketChannel extends AbstractNioByteChannel implements io.netty
     /**
      * Create a new instance
      */
-    public NioSocketChannel(EventLoop eventLoop) {
-        this(eventLoop, newSocket());
+    public NioSocketChannel() {
+        this(DEFAULT_SELECTOR_PROVIDER);
+    }
+
+    /**
+     * Create a new instance using the given {@link SelectorProvider}.
+     */
+    public NioSocketChannel(SelectorProvider provider) {
+        this(newSocket(provider));
     }
 
     /**
      * Create a new instance using the given {@link SocketChannel}.
      */
-    public NioSocketChannel(EventLoop eventLoop, SocketChannel socket) {
-        this(null, eventLoop, socket);
+    public NioSocketChannel(SocketChannel socket) {
+        this(null, socket);
     }
-
     /**
      * Create a new instance
      *
      * @param parent    the {@link Channel} which created this instance or {@code null} if it was created by the user
      * @param socket    the {@link SocketChannel} which will be used
      */
-    public NioSocketChannel(Channel parent, EventLoop eventLoop, SocketChannel socket) {
-        super(parent, eventLoop, socket);
-        config = new DefaultSocketChannelConfig(this, socket.socket());
+    public NioSocketChannel(Channel parent, SocketChannel socket) {
+        super(parent, socket);
+        config = new NioSocketChannelConfig(this, socket.socket());
     }
 
     @Override
@@ -305,5 +320,16 @@ public class NioSocketChannel extends AbstractNioByteChannel implements io.netty
     @Override
     protected ChannelOutboundBuffer newOutboundBuffer() {
         return NioSocketChannelOutboundBuffer.newInstance(this);
+    }
+
+    private final class NioSocketChannelConfig  extends DefaultSocketChannelConfig {
+        private NioSocketChannelConfig(NioSocketChannel channel, Socket javaSocket) {
+            super(channel, javaSocket);
+        }
+
+        @Override
+        protected void autoReadCleared() {
+            setReadPending(false);
+        }
     }
 }

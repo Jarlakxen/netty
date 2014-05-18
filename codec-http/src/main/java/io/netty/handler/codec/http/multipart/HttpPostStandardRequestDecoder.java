@@ -20,6 +20,7 @@ import io.netty.handler.codec.http.HttpConstants;
 import io.netty.handler.codec.http.HttpContent;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.LastHttpContent;
+import io.netty.handler.codec.http.QueryStringDecoder;
 import io.netty.handler.codec.http.multipart.HttpPostBodyUtil.SeekAheadNoBackArrayException;
 import io.netty.handler.codec.http.multipart.HttpPostBodyUtil.SeekAheadOptimize;
 import io.netty.handler.codec.http.multipart.HttpPostRequestDecoder.EndOfDataDecoderException;
@@ -28,8 +29,6 @@ import io.netty.handler.codec.http.multipart.HttpPostRequestDecoder.MultiPartSta
 import io.netty.handler.codec.http.multipart.HttpPostRequestDecoder.NotEnoughDataDecoderException;
 
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
-import java.net.URLDecoder;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
@@ -474,6 +473,7 @@ public class HttpPostStandardRequestDecoder implements InterfaceHttpPostRequestD
                 }
                 firstpos = currentpos;
                 currentStatus = MultiPartStatus.EPILOGUE;
+                undecodedChunk.readerIndex(firstpos);
                 return;
             }
             if (contRead && currentAttribute != null) {
@@ -485,7 +485,8 @@ public class HttpPostStandardRequestDecoder implements InterfaceHttpPostRequestD
                 }
                 undecodedChunk.readerIndex(firstpos);
             } else {
-                // end of line so keep index
+                // end of line or end of block so keep index to last valid position
+                undecodedChunk.readerIndex(firstpos);
             }
         } catch (ErrorDataDecoderException e) {
             // error while decoding
@@ -604,6 +605,7 @@ public class HttpPostStandardRequestDecoder implements InterfaceHttpPostRequestD
                 }
                 firstpos = currentpos;
                 currentStatus = MultiPartStatus.EPILOGUE;
+                undecodedChunk.readerIndex(firstpos);
                 return;
             }
             if (contRead && currentAttribute != null) {
@@ -615,7 +617,8 @@ public class HttpPostStandardRequestDecoder implements InterfaceHttpPostRequestD
                 }
                 undecodedChunk.readerIndex(firstpos);
             } else {
-                // end of line so keep index
+                // end of line or end of block so keep index to last valid position
+                undecodedChunk.readerIndex(firstpos);
             }
         } catch (ErrorDataDecoderException e) {
             // error while decoding
@@ -642,13 +645,8 @@ public class HttpPostStandardRequestDecoder implements InterfaceHttpPostRequestD
      * @return the decoded component
      */
     private static String decodeAttribute(String s, Charset charset) {
-        if (s == null) {
-            return "";
-        }
         try {
-            return URLDecoder.decode(s, charset.name());
-        } catch (UnsupportedEncodingException e) {
-            throw new ErrorDataDecoderException(charset.toString(), e);
+            return QueryStringDecoder.decodeComponent(s, charset);
         } catch (IllegalArgumentException e) {
             throw new ErrorDataDecoderException("Bad string: '" + s + '\'', e);
         }

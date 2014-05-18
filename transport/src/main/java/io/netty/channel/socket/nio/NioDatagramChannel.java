@@ -25,7 +25,6 @@ import io.netty.channel.ChannelMetadata;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelOutboundBuffer;
 import io.netty.channel.ChannelPromise;
-import io.netty.channel.EventLoop;
 import io.netty.channel.RecvByteBufAllocator;
 import io.netty.channel.nio.AbstractNioMessageChannel;
 import io.netty.channel.socket.DatagramChannelConfig;
@@ -44,6 +43,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
 import java.nio.channels.MembershipKey;
 import java.nio.channels.SelectionKey;
+import java.nio.channels.spi.SelectorProvider;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -61,30 +61,36 @@ public final class NioDatagramChannel
         extends AbstractNioMessageChannel implements io.netty.channel.socket.DatagramChannel {
 
     private static final ChannelMetadata METADATA = new ChannelMetadata(true);
+    private static final SelectorProvider DEFAULT_SELECTOR_PROVIDER = SelectorProvider.provider();
 
     private final DatagramChannelConfig config;
-    private final Map<InetAddress, List<MembershipKey>> memberships =
-            new HashMap<InetAddress, List<MembershipKey>>();
 
+    private Map<InetAddress, List<MembershipKey>> memberships;
     private RecvByteBufAllocator.Handle allocHandle;
 
-    private static DatagramChannel newSocket() {
+    private static DatagramChannel newSocket(SelectorProvider provider) {
         try {
-            return DatagramChannel.open();
+            /**
+             *  Use the {@link SelectorProvider} to open {@link SocketChannel} and so remove condition in
+             *  {@link SelectorProvider#provider()} which is called by each DatagramChannel.open() otherwise.
+             *
+             *  See <a href="See https://github.com/netty/netty/issues/2308">#2308</a>.
+             */
+            return provider.openDatagramChannel();
         } catch (IOException e) {
             throw new ChannelException("Failed to open a socket.", e);
         }
     }
 
-    private static DatagramChannel newSocket(InternetProtocolFamily ipFamily) {
+    private static DatagramChannel newSocket(SelectorProvider provider, InternetProtocolFamily ipFamily) {
         if (ipFamily == null) {
-            return newSocket();
+            return newSocket(provider);
         }
 
         checkJavaVersion();
 
         try {
-            return DatagramChannel.open(ProtocolFamilyConverter.convert(ipFamily));
+            return provider.openDatagramChannel(ProtocolFamilyConverter.convert(ipFamily));
         } catch (IOException e) {
             throw new ChannelException("Failed to open a socket.", e);
         }
@@ -99,23 +105,40 @@ public final class NioDatagramChannel
     /**
      * Create a new instance which will use the Operation Systems default {@link InternetProtocolFamily}.
      */
-    public NioDatagramChannel(EventLoop eventLoop) {
-        this(eventLoop, newSocket());
+    public NioDatagramChannel() {
+        this(newSocket(DEFAULT_SELECTOR_PROVIDER));
+    }
+
+    /**
+     * Create a new instance using the given {@link SelectorProvider}
+     * which will use the Operation Systems default {@link InternetProtocolFamily}.
+     */
+    public NioDatagramChannel(SelectorProvider provider) {
+        this(newSocket(provider));
     }
 
     /**
      * Create a new instance using the given {@link InternetProtocolFamily}. If {@code null} is used it will depend
      * on the Operation Systems default which will be chosen.
      */
-    public NioDatagramChannel(EventLoop eventLoop, InternetProtocolFamily ipFamily) {
-        this(eventLoop, newSocket(ipFamily));
+    public NioDatagramChannel(InternetProtocolFamily ipFamily) {
+        this(newSocket(DEFAULT_SELECTOR_PROVIDER, ipFamily));
+    }
+
+    /**
+     * Create a new instance using the given {@link SelectorProvider} and {@link InternetProtocolFamily}.
+     * If {@link InternetProtocolFamily} is {@code null} it will depend on the Operation Systems default
+     * which will be chosen.
+     */
+    public NioDatagramChannel(SelectorProvider provider, InternetProtocolFamily ipFamily) {
+        this(newSocket(provider, ipFamily));
     }
 
     /**
      * Create a new instance from the given {@link DatagramChannel}.
      */
-    public NioDatagramChannel(EventLoop eventLoop, DatagramChannel socket) {
-        super(null, eventLoop, socket, SelectionKey.OP_READ);
+    public NioDatagramChannel(DatagramChannel socket) {
+        super(null, socket, SelectionKey.OP_READ);
         config = new NioDatagramChannelConfig(this, socket);
     }
 
@@ -343,7 +366,12 @@ public final class NioDatagramChannel
             }
 
             synchronized (this) {
-                List<MembershipKey> keys = memberships.get(multicastAddress);
+                List<MembershipKey> keys = null;
+                if (memberships == null) {
+                    memberships = new HashMap<InetAddress, List<MembershipKey>>();
+                } else {
+                    keys = memberships.get(multicastAddress);
+                }
                 if (keys == null) {
                     keys = new ArrayList<MembershipKey>();
                     memberships.put(multicastAddress, keys);
@@ -511,5 +539,10 @@ public final class NioDatagramChannel
     @Override
     protected ChannelOutboundBuffer newOutboundBuffer() {
         return NioDatagramChannelOutboundBuffer.newInstance(this);
+    }
+
+    @Override
+    protected void setReadPending(boolean readPending) {
+        super.setReadPending(readPending);
     }
 }

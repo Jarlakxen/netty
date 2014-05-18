@@ -18,12 +18,11 @@ package io.netty.example.spdy.client;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.socket.SocketChannel;
-import io.netty.example.securechat.SecureChatSslContextFactory;
-import io.netty.handler.codec.spdy.SpdyFrameDecoder;
-import io.netty.handler.codec.spdy.SpdyFrameEncoder;
+import io.netty.handler.codec.spdy.SpdyFrameCodec;
 import io.netty.handler.codec.spdy.SpdyHttpDecoder;
 import io.netty.handler.codec.spdy.SpdyHttpEncoder;
 import io.netty.handler.codec.spdy.SpdySessionHandler;
+import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslHandler;
 import org.eclipse.jetty.npn.NextProtoNego;
 
@@ -34,9 +33,11 @@ import static io.netty.util.internal.logging.InternalLogLevel.*;
 
 public class SpdyClientInitializer extends ChannelInitializer<SocketChannel> {
 
+    private final SslContext sslCtx;
     private final HttpResponseClientHandler httpResponseHandler;
 
-    public SpdyClientInitializer(HttpResponseClientHandler httpResponseHandler) {
+    public SpdyClientInitializer(SslContext sslCtx, HttpResponseClientHandler httpResponseHandler) {
+        this.sslCtx = sslCtx;
         this.httpResponseHandler = httpResponseHandler;
     }
 
@@ -44,16 +45,15 @@ public class SpdyClientInitializer extends ChannelInitializer<SocketChannel> {
 
     @Override
     public void initChannel(SocketChannel ch) throws Exception {
-        SSLEngine engine = SecureChatSslContextFactory.getClientContext().createSSLEngine();
-        engine.setUseClientMode(true);
+        SslHandler sslHandler = sslCtx.newHandler(ch.alloc());
+        SSLEngine engine = sslHandler.engine();
         NextProtoNego.put(engine, new SpdyClientProvider());
         NextProtoNego.debug = true;
 
         ChannelPipeline pipeline = ch.pipeline();
 
-        pipeline.addLast("ssl", new SslHandler(engine));
-        pipeline.addLast("spdyEncoder", new SpdyFrameEncoder(SPDY_3_1));
-        pipeline.addLast("spdyDecoder", new SpdyFrameDecoder(SPDY_3_1));
+        pipeline.addLast("ssl", sslHandler);
+        pipeline.addLast("spdyFrameCodec", new SpdyFrameCodec(SPDY_3_1));
         pipeline.addLast("spdyFrameLogger", new SpdyFrameLogger(INFO));
         pipeline.addLast("spdySessionHandler", new SpdySessionHandler(SPDY_3_1, false));
         pipeline.addLast("spdyHttpEncoder", new SpdyHttpEncoder(SPDY_3_1));

@@ -61,16 +61,22 @@ public final class EpollSocketChannel extends AbstractEpollChannel implements So
     private ScheduledFuture<?> connectTimeoutFuture;
     private SocketAddress requestedRemoteAddress;
 
+    private volatile InetSocketAddress local;
+    private volatile InetSocketAddress remote;
     private volatile boolean inputShutdown;
     private volatile boolean outputShutdown;
 
-    EpollSocketChannel(Channel parent, EventLoop eventLoop, int fd) {
-        super(parent, eventLoop, fd, Native.EPOLLIN, true);
+    EpollSocketChannel(Channel parent, int fd) {
+        super(parent, fd, Native.EPOLLIN, true);
         config = new EpollSocketChannelConfig(this);
+        // Directly cache the remote and local addresses
+        // See https://github.com/netty/netty/issues/2359
+        remote = Native.remoteAddress(fd);
+        local = Native.localAddress(fd);
     }
 
-    public EpollSocketChannel(EventLoop eventLoop) {
-        super(eventLoop, Native.EPOLLIN);
+    public EpollSocketChannel() {
+        super(Native.socketStreamFd(), Native.EPOLLIN);
         config = new EpollSocketChannelConfig(this);
     }
 
@@ -81,32 +87,19 @@ public final class EpollSocketChannel extends AbstractEpollChannel implements So
 
     @Override
     protected SocketAddress localAddress0() {
-        return Native.localAddress(fd);
+        return local;
     }
 
     @Override
     protected SocketAddress remoteAddress0() {
-        return Native.remoteAddress(fd);
+        return remote;
     }
 
     @Override
     protected void doBind(SocketAddress local) throws Exception {
         InetSocketAddress localAddress = (InetSocketAddress) local;
         Native.bind(fd, localAddress.getAddress(), localAddress.getPort());
-    }
-
-    private void setEpollOut() {
-        if ((flags & Native.EPOLLOUT) == 0) {
-            flags |= Native.EPOLLOUT;
-            ((EpollEventLoop) eventLoop()).modify(this);
-        }
-    }
-
-    private void clearEpollOut() {
-        if ((flags & Native.EPOLLOUT) != 0) {
-            flags &= ~Native.EPOLLOUT;
-            ((EpollEventLoop) eventLoop()).modify(this);
-        }
+        this.local = Native.localAddress(fd);
     }
 
     /**
@@ -178,7 +171,7 @@ public final class EpollSocketChannel extends AbstractEpollChannel implements So
             NioSocketChannelOutboundBuffer in, int msgCount, ByteBuffer[] nioBuffers) throws IOException {
 
         int nioBufferCnt = in.nioBufferCount();
-        long expectedWrittenBytes = in.nioBufferCount();
+        long expectedWrittenBytes = in.nioBufferSize();
 
         long localWrittenBytes = Native.writev(fd, nioBuffers, 0, nioBufferCnt);
 
@@ -362,7 +355,7 @@ public final class EpollSocketChannel extends AbstractEpollChannel implements So
             inputShutdown = true;
             if (isOpen()) {
                 if (Boolean.TRUE.equals(config().getOption(ChannelOption.ALLOW_HALF_CLOSURE))) {
-                    clearEpollIn();
+                    clearEpollIn0();
                     pipeline.fireUserEventTriggered(ChannelInputShutdownEvent.INSTANCE);
                 } else {
                     close(voidPromise());
@@ -485,9 +478,13 @@ public final class EpollSocketChannel extends AbstractEpollChannel implements So
 
             assert eventLoop().inEventLoop();
 
+            boolean connectStillInProgress = false;
             try {
                 boolean wasActive = isActive();
-                doFinishConnect();
+                if (!doFinishConnect()) {
+                    connectStillInProgress = true;
+                    return;
+                }
                 fulfillConnectPromise(connectPromise, wasActive);
             } catch (Throwable t) {
                 if (t instanceof ConnectException) {
@@ -498,12 +495,14 @@ public final class EpollSocketChannel extends AbstractEpollChannel implements So
 
                 fulfillConnectPromise(connectPromise, t);
             } finally {
-                // Check for null as the connectTimeoutFuture is only created if a connectTimeoutMillis > 0 is used
-                // See https://github.com/netty/netty/issues/1770
-                if (connectTimeoutFuture != null) {
-                    connectTimeoutFuture.cancel(false);
+                if (!connectStillInProgress) {
+                    // Check for null as the connectTimeoutFuture is only created if a connectTimeoutMillis > 0 is used
+                    // See https://github.com/netty/netty/issues/1770
+                    if (connectTimeoutFuture != null) {
+                        connectTimeoutFuture.cancel(false);
+                    }
+                    connectPromise = null;
                 }
-                connectPromise = null;
             }
         }
 
@@ -522,13 +521,17 @@ public final class EpollSocketChannel extends AbstractEpollChannel implements So
          */
         private boolean doConnect(InetSocketAddress remoteAddress, InetSocketAddress localAddress) throws Exception {
             if (localAddress != null) {
+                checkResolvable(localAddress);
                 Native.bind(fd, localAddress.getAddress(), localAddress.getPort());
             }
 
             boolean success = false;
             try {
+                checkResolvable(remoteAddress);
                 boolean connected = Native.connect(fd, remoteAddress.getAddress(),
                         remoteAddress.getPort());
+                remote = remoteAddress;
+                local = Native.localAddress(fd);
                 if (!connected) {
                     setEpollOut();
                 }
@@ -544,9 +547,14 @@ public final class EpollSocketChannel extends AbstractEpollChannel implements So
         /**
          * Finish the connect
          */
-        private void doFinishConnect() throws Exception {
-            Native.finishConnect(fd);
-            clearEpollOut();
+        private boolean doFinishConnect() throws Exception {
+            if (Native.finishConnect(fd)) {
+                clearEpollOut();
+                return true;
+            } else {
+                setEpollOut();
+                return false;
+            }
         }
 
         /**
@@ -589,12 +597,11 @@ public final class EpollSocketChannel extends AbstractEpollChannel implements So
             ByteBuf byteBuf = null;
             boolean close = false;
             try {
-                int byteBufCapacity = allocHandle.guess();
                 int totalReadAmount = 0;
                 for (;;) {
                     // we use a direct buffer here as the native implementations only be able
                     // to handle direct buffers.
-                    byteBuf = allocator.directBuffer(byteBufCapacity);
+                    byteBuf = allocHandle.allocate(allocator);
                     int writable = byteBuf.writableBytes();
                     int localReadAmount = doReadBytes(byteBuf);
                     if (localReadAmount <= 0) {
@@ -649,7 +656,7 @@ public final class EpollSocketChannel extends AbstractEpollChannel implements So
                 //
                 // See https://github.com/netty/netty/issues/2254
                 if (!config.isAutoRead() && !readPending) {
-                    clearEpollIn();
+                    clearEpollIn0();
                 }
             }
         }

@@ -16,12 +16,18 @@
 
 package io.netty.buffer;
 
+import io.netty.util.concurrent.GlobalEventExecutor;
+import io.netty.util.concurrent.ScheduledFuture;
 import io.netty.util.internal.PlatformDependent;
 import io.netty.util.internal.SystemPropertyUtil;
 import io.netty.util.internal.logging.InternalLogger;
 import io.netty.util.internal.logging.InternalLoggerFactory;
 
 import java.nio.ByteBuffer;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class PooledByteBufAllocator extends AbstractByteBufAllocator {
@@ -33,6 +39,12 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
 
     private static final int DEFAULT_PAGE_SIZE;
     private static final int DEFAULT_MAX_ORDER; // 8192 << 11 = 16 MiB per chunk
+    private static final int DEFAULT_TINY_CACHE_SIZE;
+    private static final int DEFAULT_SMALL_CACHE_SIZE;
+    private static final int DEFAULT_NORMAL_CACHE_SIZE;
+    private static final int DEFAULT_MAX_CACHED_BUFFER_CAPACITY;
+    private static final int DEFAULT_CACHE_TRIM_INTERVAL;
+    private static final long DEFAULT_CACHE_CLEANUP_INTERVAL;
 
     private static final int MIN_PAGE_SIZE = 4096;
     private static final int MAX_CHUNK_SIZE = (int) (((long) Integer.MAX_VALUE + 1) / 2);
@@ -75,6 +87,23 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
                                 runtime.availableProcessors(),
                                 PlatformDependent.maxDirectMemory() / defaultChunkSize / 2 / 3)));
 
+        // cache sizes
+        DEFAULT_TINY_CACHE_SIZE = SystemPropertyUtil.getInt("io.netty.allocator.tinyCacheSize", 512);
+        DEFAULT_SMALL_CACHE_SIZE = SystemPropertyUtil.getInt("io.netty.allocator.smallCacheSize", 256);
+        DEFAULT_NORMAL_CACHE_SIZE = SystemPropertyUtil.getInt("io.netty.allocator.normalCacheSize", 64);
+
+        // 32 kb is the default maximum capacity of the cached buffer. Similar to what is explained in
+        // 'Scalable memory allocation using jemalloc'
+        DEFAULT_MAX_CACHED_BUFFER_CAPACITY = SystemPropertyUtil.getInt(
+                "io.netty.allocator.maxCachedBufferCapacity", 32 * 1024);
+
+        // the number of threshold of allocations when cached entries will be freed up if not frequently used
+        DEFAULT_CACHE_TRIM_INTERVAL = SystemPropertyUtil.getInt(
+                "io.netty.allocator.cacheTrimInterval", 8192);
+
+        // the default interval at which we check for caches that are assigned to Threads that are not alive anymore
+        DEFAULT_CACHE_CLEANUP_INTERVAL = SystemPropertyUtil.getLong(
+                "io.netty.allocator.cacheCleanupInterval", 5000);
         if (logger.isDebugEnabled()) {
             logger.debug("-Dio.netty.allocator.numHeapArenas: {}", DEFAULT_NUM_HEAP_ARENA);
             logger.debug("-Dio.netty.allocator.numDirectArenas: {}", DEFAULT_NUM_DIRECT_ARENA);
@@ -89,6 +118,14 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
                 logger.debug("-Dio.netty.allocator.maxOrder: {}", DEFAULT_MAX_ORDER, maxOrderFallbackCause);
             }
             logger.debug("-Dio.netty.allocator.chunkSize: {}", DEFAULT_PAGE_SIZE << DEFAULT_MAX_ORDER);
+            logger.debug("-Dio.netty.allocator.tinyCacheSize: {}", DEFAULT_TINY_CACHE_SIZE);
+            logger.debug("-Dio.netty.allocator.smallCacheSize: {}", DEFAULT_SMALL_CACHE_SIZE);
+            logger.debug("-Dio.netty.allocator.normalCacheSize: {}", DEFAULT_NORMAL_CACHE_SIZE);
+            logger.debug("-Dio.netty.allocator.maxCachedBufferCapacity: {}", DEFAULT_MAX_CACHED_BUFFER_CAPACITY);
+            logger.debug("-Dio.netty.allocator.cacheTrimInterval: {}",
+                    DEFAULT_CACHE_TRIM_INTERVAL);
+            logger.debug("-Dio.netty.allocator.cacheCleanupInterval: {} ms",
+                    DEFAULT_CACHE_CLEANUP_INTERVAL);
         }
     }
 
@@ -97,30 +134,11 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
 
     private final PoolArena<byte[]>[] heapArenas;
     private final PoolArena<ByteBuffer>[] directArenas;
+    private final int tinyCacheSize;
+    private final int smallCacheSize;
+    private final int normalCacheSize;
 
-    final ThreadLocal<PoolThreadCache> threadCache = new ThreadLocal<PoolThreadCache>() {
-        private final AtomicInteger index = new AtomicInteger();
-        @Override
-        protected PoolThreadCache initialValue() {
-            final int idx = index.getAndIncrement();
-            final PoolArena<byte[]> heapArena;
-            final PoolArena<ByteBuffer> directArena;
-
-            if (heapArenas != null) {
-                heapArena = heapArenas[Math.abs(idx % heapArenas.length)];
-            } else {
-                heapArena = null;
-            }
-
-            if (directArenas != null) {
-                directArena = directArenas[Math.abs(idx % directArenas.length)];
-            } else {
-                directArena = null;
-            }
-
-            return new PoolThreadCache(heapArena, directArena);
-        }
-    };
+    final PoolThreadLocalCache threadCache;
 
     public PooledByteBufAllocator() {
         this(false);
@@ -135,8 +153,24 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
     }
 
     public PooledByteBufAllocator(boolean preferDirect, int nHeapArena, int nDirectArena, int pageSize, int maxOrder) {
-        super(preferDirect);
+        this(preferDirect, nHeapArena, nDirectArena, pageSize, maxOrder,
+                DEFAULT_TINY_CACHE_SIZE, DEFAULT_SMALL_CACHE_SIZE, DEFAULT_NORMAL_CACHE_SIZE);
+    }
 
+    public PooledByteBufAllocator(boolean preferDirect, int nHeapArena, int nDirectArena, int pageSize, int maxOrder,
+                                  int tinyCacheSize, int smallCacheSize, int normalCacheSize) {
+        this(preferDirect, nHeapArena, nDirectArena, pageSize, maxOrder, tinyCacheSize, smallCacheSize,
+                normalCacheSize, DEFAULT_CACHE_CLEANUP_INTERVAL);
+    }
+
+    public PooledByteBufAllocator(boolean preferDirect, int nHeapArena, int nDirectArena, int pageSize, int maxOrder,
+                                  int tinyCacheSize, int smallCacheSize, int normalCacheSize,
+                                  long cacheThreadAliveCheckInterval) {
+        super(preferDirect);
+        threadCache = new PoolThreadLocalCache(cacheThreadAliveCheckInterval);
+        this.tinyCacheSize = tinyCacheSize;
+        this.smallCacheSize = smallCacheSize;
+        this.normalCacheSize = normalCacheSize;
         final int chunkSize = validateAndCalculateChunkSize(pageSize, maxOrder);
 
         if (nHeapArena < 0) {
@@ -174,26 +208,15 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
 
     private static int validateAndCalculatePageShifts(int pageSize) {
         if (pageSize < MIN_PAGE_SIZE) {
-            throw new IllegalArgumentException("pageSize: " + pageSize + " (expected: 4096+)");
+            throw new IllegalArgumentException("pageSize: " + pageSize + " (expected: " + MIN_PAGE_SIZE + "+)");
         }
 
-        // Ensure pageSize is power of 2.
-        boolean found1 = false;
-        int pageShifts = 0;
-        for (int i = pageSize; i != 0 ; i >>= 1) {
-            if ((i & 1) != 0) {
-                if (!found1) {
-                    found1 = true;
-                } else {
-                    throw new IllegalArgumentException("pageSize: " + pageSize + " (expected: power of 2");
-                }
-            } else {
-                if (!found1) {
-                    pageShifts ++;
-                }
-            }
+        if ((pageSize & pageSize - 1) != 0) {
+            throw new IllegalArgumentException("pageSize: " + pageSize + " (expected: power of 2)");
         }
-        return pageShifts;
+
+        // Logarithm base 2. At this point we know that pageSize is a power of two.
+        return Integer.SIZE - 1 - Integer.numberOfLeadingZeros(pageSize);
     }
 
     private static int validateAndCalculateChunkSize(int pageSize, int maxOrder) {
@@ -250,6 +273,100 @@ public class PooledByteBufAllocator extends AbstractByteBufAllocator {
     @Override
     public boolean isDirectBufferPooled() {
         return directArenas != null;
+    }
+
+    final class PoolThreadLocalCache extends ThreadLocal<PoolThreadCache> {
+        private final Map<Thread, PoolThreadCache> caches = new IdentityHashMap<Thread, PoolThreadCache>();
+        private final ReleaseCacheTask task = new ReleaseCacheTask();
+        private final AtomicInteger index = new AtomicInteger();
+        private final long cacheThreadAliveCheckInterval;
+
+        PoolThreadLocalCache(long cacheThreadAliveCheckInterval) {
+            this.cacheThreadAliveCheckInterval = cacheThreadAliveCheckInterval;
+        }
+
+        @Override
+        public PoolThreadCache get() {
+            PoolThreadCache cache = super.get();
+            if (cache == null) {
+                final int idx = index.getAndIncrement();
+                final PoolArena<byte[]> heapArena;
+                final PoolArena<ByteBuffer> directArena;
+
+                if (heapArenas != null) {
+                    heapArena = heapArenas[Math.abs(idx % heapArenas.length)];
+                } else {
+                    heapArena = null;
+                }
+
+                if (directArenas != null) {
+                    directArena = directArenas[Math.abs(idx % directArenas.length)];
+                } else {
+                    directArena = null;
+                }
+                // If the current Thread is assigned to an EventExecutor we can
+                // easily free the cached stuff again once the EventExecutor completes later.
+                cache = new PoolThreadCache(
+                        heapArena, directArena, tinyCacheSize, smallCacheSize, normalCacheSize,
+                        DEFAULT_MAX_CACHED_BUFFER_CAPACITY, DEFAULT_CACHE_TRIM_INTERVAL);
+                set(cache);
+            }
+            return cache;
+        }
+
+        @Override
+        public void set(PoolThreadCache value) {
+            Thread current = Thread.currentThread();
+            synchronized (caches) {
+                caches.put(current, value);
+                if (task.releaseTaskFuture == null) {
+                    task.releaseTaskFuture = GlobalEventExecutor.INSTANCE.scheduleWithFixedDelay(task,
+                            cacheThreadAliveCheckInterval, cacheThreadAliveCheckInterval, TimeUnit.MILLISECONDS);
+                }
+            }
+            super.set(value);
+        }
+
+        @Override
+        public void remove() {
+            super.remove();
+            PoolThreadCache cache;
+            Thread current = Thread.currentThread();
+            synchronized (caches) {
+                cache = caches.remove(current);
+            }
+            if (cache != null) {
+                cache.free();
+            }
+        }
+
+        private final class ReleaseCacheTask implements Runnable {
+            private ScheduledFuture<?> releaseTaskFuture;
+
+            @Override
+            public void run() {
+                synchronized (caches) {
+                    for (Iterator<Map.Entry<Thread, PoolThreadCache>> i = caches.entrySet().iterator();
+                         i.hasNext();) {
+                        Map.Entry<Thread, PoolThreadCache> cache = i.next();
+                        if (cache.getKey().isAlive()) {
+                            // Thread is still alive...
+                            continue;
+                        }
+                        cache.getValue().free();
+                        i.remove();
+                    }
+                    if (caches.isEmpty()) {
+                        // Nothing in the caches anymore so no need to continue to check if something needs to be
+                        // released periodically. The task will be rescheduled if there is any need later.
+                        if (releaseTaskFuture != null) {
+                            releaseTaskFuture.cancel(true);
+                            releaseTaskFuture = null;
+                        }
+                    }
+                }
+            }
+        }
     }
 
 //    Too noisy at the moment.

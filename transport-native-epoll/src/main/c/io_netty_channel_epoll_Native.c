@@ -27,11 +27,13 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <sys/utsname.h>
 #include "io_netty_channel_epoll_Native.h"
 
 
 // optional
 extern int accept4(int sockFd, struct sockaddr *addr, socklen_t *addrlen, int flags) __attribute__((weak));
+extern int epoll_create1(int flags) __attribute__((weak));
 
 // Those are initialized in the init(...) method and cached for performance reasons
 jmethodID updatePosId = NULL;
@@ -47,11 +49,14 @@ jfieldID readerIndexFieldId = NULL;
 jfieldID writerIndexFieldId = NULL;
 jfieldID memoryAddressFieldId = NULL;
 jmethodID inetSocketAddrMethodId = NULL;
+jmethodID datagramSocketAddrMethodId = NULL;
 jclass runtimeExceptionClass = NULL;
 jclass ioExceptionClass = NULL;
 jclass closedChannelExceptionClass = NULL;
 jmethodID closedChannelExceptionMethodId = NULL;
 jclass inetSocketAddressClass = NULL;
+jclass datagramSocketAddressClass = NULL;
+
 static int socketType;
 
 // util methods
@@ -105,7 +110,7 @@ jint epollCtl(JNIEnv * env, jint efd, int op, jint fd, jint flags, jint id) {
 
 jint getOption(JNIEnv *env, jint fd, int level, int optname, const void *optval, socklen_t optlen) {
     int code;
-    code = getsockopt(fd, level, optname, &optval, &optlen);
+    code = getsockopt(fd, level, optname, optval, &optlen);
     if (code == 0) {
         return 0;
     }
@@ -137,6 +142,23 @@ jobject createInetSocketAddress(JNIEnv * env, struct sockaddr_storage addr) {
     }
     jstring ipString = (*env)->NewStringUTF(env, ipstr);
     jobject socketAddr = (*env)->NewObject(env, inetSocketAddressClass, inetSocketAddrMethodId, ipString, port);
+    return socketAddr;
+}
+
+jobject createDatagramSocketAddress(JNIEnv * env, struct sockaddr_storage addr, int len) {
+    char ipstr[INET6_ADDRSTRLEN];
+    int port;
+    if (addr.ss_family == AF_INET) {
+        struct sockaddr_in *s = (struct sockaddr_in *)&addr;
+        port = ntohs(s->sin_port);
+        inet_ntop(AF_INET, &s->sin_addr, ipstr, sizeof ipstr);
+    } else {
+        struct sockaddr_in6 *s = (struct sockaddr_in6 *)&addr;
+        port = ntohs(s->sin6_port);
+        inet_ntop(AF_INET6, &s->sin6_addr, ipstr, sizeof ipstr);
+    }
+    jstring ipString = (*env)->NewStringUTF(env, ipstr);
+    jobject socketAddr = (*env)->NewObject(env, datagramSocketAddressClass, datagramSocketAddrMethodId, ipString, port, len);
     return socketAddr;
 }
 
@@ -173,6 +195,16 @@ static int socket_type() {
         close(fd);
         return AF_INET6;
     }
+}
+
+void init_in_addr(JNIEnv * env, jbyteArray address, struct in_addr * addr) {
+    jbyte* addressBytes = (*env)->GetByteArrayElements(env, address, 0);
+    if (socketType == AF_INET6) {
+        memcpy(addr, addressBytes, 16);
+    } else {
+        memcpy(addr, addressBytes + 12, 4);
+    }
+    (*env)->ReleaseByteArrayElements(env, address, addressBytes, JNI_ABORT);
 }
 // util methods end
 
@@ -229,6 +261,18 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved) {
         }
         inetSocketAddressClass = (jclass) (*env)->NewGlobalRef(env, localInetSocketAddressClass);
         if (inetSocketAddressClass == NULL) {
+            // out-of-memory!
+            throwOutOfMemoryError(env, "Error allocating memory");
+            return JNI_ERR;
+        }
+
+        jclass localDatagramSocketAddressClass = (*env)->FindClass(env, "io/netty/channel/epoll/EpollDatagramChannel$DatagramSocketAddress");
+        if (localDatagramSocketAddressClass == NULL) {
+            // pending exception...
+            return JNI_ERR;
+        }
+        datagramSocketAddressClass = (jclass) (*env)->NewGlobalRef(env, localDatagramSocketAddressClass);
+        if (datagramSocketAddressClass == NULL) {
             // out-of-memory!
             throwOutOfMemoryError(env, "Error allocating memory");
             return JNI_ERR;
@@ -326,6 +370,12 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved) {
         }
         socketType = socket_type();
 
+        datagramSocketAddrMethodId = (*env)->GetMethodID(env, datagramSocketAddressClass, "<init>", "(Ljava/lang/String;II)V");
+        if (datagramSocketAddrMethodId == NULL) {
+            throwRuntimeException(env, "Unable to obtain constructor of DatagramSocketAddress");
+            return JNI_ERR;
+        }
+
         jclass addressEntryClass = (*env)->FindClass(env, "io/netty/channel/epoll/EpollChannelOutboundBuffer$AddressEntry");
         if (addressEntryClass == NULL) {
              // pending exception...
@@ -369,6 +419,9 @@ void JNI_OnUnload(JavaVM *vm, void *reserved) {
         if (inetSocketAddressClass != NULL) {
             (*env)->DeleteGlobalRef(env, inetSocketAddressClass);
         }
+        if (datagramSocketAddressClass != NULL) {
+            (*env)->DeleteGlobalRef(env, datagramSocketAddressClass);
+        }
     }
 }
 
@@ -401,10 +454,24 @@ JNIEXPORT void JNICALL Java_io_netty_channel_epoll_Native_eventFdRead(JNIEnv * e
 }
 
 JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_epollCreate(JNIEnv * env, jclass clazz) {
-    jint efd = epoll_create1(EPOLL_CLOEXEC);
+    jint efd;
+    if (epoll_create1) {
+        efd = epoll_create1(EPOLL_CLOEXEC);
+    } else {
+        // size will be ignored anyway but must be positive
+        efd = epoll_create(126);
+    }
     if (efd < 0) {
         int err = errno;
         throwRuntimeException(env, exceptionMessage("Error during epoll_create(...): ", err));
+    }
+    if (!epoll_create1) {
+        if (fcntl(efd, F_SETFD, FD_CLOEXEC) < 0) {
+            int err = errno;
+            close(efd);
+            throwRuntimeException(env, exceptionMessage("Error during fcntl(...): ", err));
+            return err;
+        }
     }
     return efd;
 }
@@ -485,7 +552,6 @@ JNIEXPORT void JNICALL Java_io_netty_channel_epoll_Native_epollCtlDel(JNIEnv * e
     }
 }
 
-
 jint write0(JNIEnv * env, jclass clazz, jint fd, void *buffer, jint pos, jint limit) {
     ssize_t res;
     int err;
@@ -515,11 +581,98 @@ JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_write(JNIEnv * env, jc
         throwRuntimeException(env, "Unable to access address of buffer");
         return -1;
     }
-    return write0(env, clazz, fd, buffer, pos, limit);
+    jint res = write0(env, clazz, fd, buffer, pos, limit);
+    if (res > 0) {
+        // Increment the pos of the ByteBuffer as it may be only partial written to prevent data-corruption later once we
+        // try to write the remaining data.
+        // See https://github.com/netty/netty/issues/2371
+        incrementPosition(env, jbuffer, res);
+    }
+    return res;
 }
 
 JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_writeAddress(JNIEnv * env, jclass clazz, jint fd, jlong address, jint pos, jint limit) {
     return write0(env, clazz, fd, (void *) address, pos, limit);
+}
+
+jint sendTo0(JNIEnv * env, jint fd, void* buffer, jint pos, jint limit ,jbyteArray address, jint scopeId, jint port) {
+    struct sockaddr_storage addr;
+    init_sockaddr(env, address, scopeId, port, &addr);
+
+    ssize_t res;
+    int err;
+    do {
+       res = sendto(fd, buffer + pos, (size_t) (limit - pos), 0, (struct sockaddr *)&addr, sizeof(struct sockaddr_storage));
+       // keep on writing if it was interrupted
+    } while(res == -1 && ((err = errno) == EINTR));
+
+    if (res < 0) {
+        // network stack saturated... try again later
+        if (err == EAGAIN || err == EWOULDBLOCK) {
+            return 0;
+        }
+        if (err == EBADF) {
+            throwClosedChannelException(env);
+            return -1;
+        }
+        throwIOException(env, exceptionMessage("Error while sendto(...): ", err));
+        return -1;
+    }
+    return (jint) res;
+}
+
+JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_sendTo(JNIEnv * env, jclass clazz, jint fd, jobject jbuffer, jint pos, jint limit, jbyteArray address, jint scopeId, jint port) {
+    void *buffer = (*env)->GetDirectBufferAddress(env, jbuffer);
+    if (buffer == NULL) {
+        throwRuntimeException(env, "Unable to access address of buffer");
+        return -1;
+    }
+    return sendTo0(env, fd, buffer, pos, limit, address, scopeId, port);
+}
+
+JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_sendToAddress(JNIEnv * env, jclass clazz, jint fd, jlong memoryAddress, jint pos, jint limit ,jbyteArray address, jint scopeId, jint port) {
+    return sendTo0(env, fd, (void*) memoryAddress, pos, limit, address, scopeId, port);
+}
+
+jobject recvFrom0(JNIEnv * env, jint fd, void* buffer, jint pos, jint limit) {
+    struct sockaddr_storage addr;
+    socklen_t addrlen = sizeof(addr);
+    ssize_t res;
+    int err;
+
+    do {
+        res = recvfrom(fd, buffer + pos, (size_t) (limit - pos), 0, (struct sockaddr *)&addr, &addrlen);
+        // Keep on reading if we was interrupted
+    } while (res == -1 && ((err = errno) == EINTR));
+
+    if (res < 0) {
+        if (err == EAGAIN || err == EWOULDBLOCK) {
+            // Nothing left to read
+            return NULL;
+        }
+        if (err == EBADF) {
+            throwClosedChannelException(env);
+            return NULL;
+        }
+        throwIOException(env, exceptionMessage("Error while recvFrom(...): ", err));
+        return NULL;
+    }
+
+    return createDatagramSocketAddress(env, addr, res);
+}
+
+JNIEXPORT jobject JNICALL Java_io_netty_channel_epoll_Native_recvFrom(JNIEnv * env, jclass clazz, jint fd, jobject jbuffer, jint pos, jint limit) {
+    void *buffer = (*env)->GetDirectBufferAddress(env, jbuffer);
+    if (buffer == NULL) {
+        throwRuntimeException(env, "Unable to access address of buffer");
+        return NULL;
+    }
+
+    return recvFrom0(env, fd, buffer, pos, limit);
+}
+
+JNIEXPORT jobject JNICALL Java_io_netty_channel_epoll_Native_recvFromAddress(JNIEnv * env, jclass clazz, jint fd, jlong address, jint pos, jint limit) {
+    return recvFrom0(env, fd, (void*) address, pos, limit);
 }
 
 void incrementPosition(JNIEnv * env, jobject bufObj, int written) {
@@ -692,9 +845,9 @@ JNIEXPORT void JNICALL Java_io_netty_channel_epoll_Native_shutdown(JNIEnv * env,
     }
 }
 
-JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_socket(JNIEnv * env, jclass clazz) {
+jint socket0(JNIEnv * env, jclass clazz, int type) {
     // TODO: Maybe also respect -Djava.net.preferIPv4Stack=true
-    int fd = socket(socketType, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    int fd = socket(socketType, type | SOCK_NONBLOCK, 0);
     if (fd == -1) {
         int err = errno;
         throwIOException(env, exceptionMessage("Error creating socket: ", err));
@@ -709,6 +862,14 @@ JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_socket(JNIEnv * env, j
         }
     }
     return fd;
+}
+
+JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_socketDgram(JNIEnv * env, jclass clazz) {
+    return socket0(env, clazz, SOCK_DGRAM);
+}
+
+JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_socketStream(JNIEnv * env, jclass clazz) {
+    return socket0(env, clazz, SOCK_STREAM);
 }
 
 JNIEXPORT void JNICALL Java_io_netty_channel_epoll_Native_bind(JNIEnv * env, jclass clazz, jint fd, jbyteArray address, jint scopeId, jint port) {
@@ -750,14 +911,28 @@ JNIEXPORT jboolean JNICALL Java_io_netty_channel_epoll_Native_connect(JNIEnv * e
     return JNI_TRUE;
 }
 
-JNIEXPORT void JNICALL Java_io_netty_channel_epoll_Native_finishConnect(JNIEnv * env, jclass clazz, jint fd) {
-    // connect done, check for error
+JNIEXPORT jboolean JNICALL Java_io_netty_channel_epoll_Native_finishConnect(JNIEnv * env, jclass clazz, jint fd) {
+    // connect may be done
+    // return true if connection finished successfully
+    // return false if connection is still in progress
+    // throw exception if connection failed
     int optval;
-    int res =  getOption(env, fd, SOL_SOCKET, SO_ERROR, &optval, sizeof(optval));
-    if (res == 0) {
-        return;
+    int res = getOption(env, fd, SOL_SOCKET, SO_ERROR, &optval, sizeof(optval));
+    if (res != 0) {
+        // getOption failed
+        throwIOException(env, exceptionMessage("finishConnect getOption failed: ", res));
+        return JNI_FALSE;
+    } else if (optval == EINPROGRESS) {
+        // connect still in progress
+        return JNI_FALSE;
+    } else if (optval == 0) {
+        // connect succeeded
+        return JNI_TRUE;
+    } else {
+        // connect failed
+        throwIOException(env, exceptionMessage("Unable to connect to remote host: ", optval));
+        return JNI_FALSE;
     }
-    throwIOException(env, exceptionMessage("Unable to connect to remote host: ", optval));
 }
 
 JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_accept(JNIEnv * env, jclass clazz, jint fd) {
@@ -860,6 +1035,10 @@ JNIEXPORT void JNICALL Java_io_netty_channel_epoll_Native_setReuseAddress(JNIEnv
     setOption(env, fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
 }
 
+JNIEXPORT void JNICALL Java_io_netty_channel_epoll_Native_setReusePort(JNIEnv * env, jclass clazz, jint fd, jint optval) {
+    setOption(env, fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
+}
+
 JNIEXPORT void JNICALL Java_io_netty_channel_epoll_Native_setTcpNoDelay(JNIEnv *env, jclass clazz, jint fd, jint optval) {
     setOption(env, fd, IPPROTO_TCP, TCP_NODELAY, &optval, sizeof(optval));
 }
@@ -896,9 +1075,33 @@ JNIEXPORT void JNICALL Java_io_netty_channel_epoll_Native_setTrafficClass(JNIEnv
     setOption(env, fd, SOL_SOCKET, SO_LINGER, &solinger, sizeof(solinger));
 }
 
+JNIEXPORT void JNICALL Java_io_netty_channel_epoll_Native_setBroadcast(JNIEnv * env, jclass clazz, jint fd, jint optval) {
+    setOption(env, fd, SOL_SOCKET, SO_BROADCAST, &optval, sizeof(optval));
+}
+
+JNIEXPORT void JNICALL Java_io_netty_channel_epoll_Native_setTcpKeepIdle(JNIEnv *env, jclass clazz, jint fd, jint optval) {
+    setOption(env, fd, SOL_TCP, TCP_KEEPIDLE, &optval, sizeof(optval));
+}
+
+JNIEXPORT void JNICALL Java_io_netty_channel_epoll_Native_setTcpKeepIntvl(JNIEnv *env, jclass clazz, jint fd, jint optval) {
+    setOption(env, fd, SOL_TCP, TCP_KEEPINTVL, &optval, sizeof(optval));
+}
+
+JNIEXPORT void Java_io_netty_channel_epoll_Native_setTcpKeepCnt(JNIEnv *env, jclass clazz, jint fd, jint optval) {
+    setOption(env, fd, SOL_TCP, TCP_KEEPCNT, &optval, sizeof(optval));
+}
+
 JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_isReuseAddresss(JNIEnv *env, jclass clazz, jint fd) {
     int optval;
     if (getOption(env, fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) == -1) {
+        return -1;
+    }
+    return optval;
+}
+
+JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_isReusePort(JNIEnv *env, jclass clazz, jint fd) {
+    int optval;
+    if (getOption(env, fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)) == -1) {
         return -1;
     }
     return optval;
@@ -954,4 +1157,48 @@ JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_getTrafficClass(JNIEnv
         return -1;
     }
     return optval;
+}
+
+JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_isBroadcast(JNIEnv *env, jclass clazz, jint fd) {
+    int optval;
+    if (getOption(env, fd, SOL_SOCKET, SO_BROADCAST, &optval, sizeof(optval)) == -1) {
+        return -1;
+    }
+    return optval;
+}
+
+JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_getTcpKeepIdle(JNIEnv *env, jclass clazz, jint fd) {
+    int optval;
+    if (getOption(env, fd, SOL_TCP, TCP_KEEPIDLE, &optval, sizeof(optval)) == -1) {
+        return -1;
+    }
+    return optval;
+}
+
+JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_getTcpKeepIntvl(JNIEnv *env, jclass clazz, jint fd) {
+    int optval;
+    if (getOption(env, fd, SOL_TCP, TCP_KEEPINTVL, &optval, sizeof(optval)) == -1) {
+        return -1;
+    }
+    return optval;
+}
+
+JNIEXPORT jint JNICALL Java_io_netty_channel_epoll_Native_getTcpKeepCnt(JNIEnv *env, jclass clazz, jint fd) {
+     int optval;
+     if (getOption(env, fd, SOL_TCP, TCP_KEEPCNT, &optval, sizeof(optval)) == -1) {
+         return -1;
+     }
+     return optval;
+}
+
+JNIEXPORT jstring JNICALL Java_io_netty_channel_epoll_Native_kernelVersion(JNIEnv *env, jclass clazz) {
+    struct utsname name;
+
+    int res = uname(&name);
+    if (res == 0) {
+        return (*env)->NewStringUTF(env, name.release);
+    }
+    int err = errno;
+    throwRuntimeException(env, exceptionMessage("Error during uname(...): ", err));
+    return NULL;
 }

@@ -20,7 +20,7 @@
   <parent>
     <groupId>org.sonatype.oss</groupId>
     <artifactId>oss-parent</artifactId>
-    <version>7</version>
+    <version>9</version>
   </parent>
 
   <groupId>io.netty</groupId>
@@ -81,6 +81,7 @@
           -XX:+OptimizeStringConcat
           -XX:+HeapDumpOnOutOfMemoryError
           -Dio.netty.leakDetectionLevel=3
+          -verbose:gc
         </test.jvm.argLine>
       </properties>
     </profile>
@@ -121,7 +122,7 @@
       </properties>
     </profile>
     <profile>
-      <id>linux-native</id>
+      <id>linux</id>
       <activation>
         <os>
           <family>linux</family>
@@ -130,6 +131,53 @@
       <modules>
         <module>transport-native-epoll</module>
       </modules>
+    </profile>
+    <!--
+      Netty must be released from RHEL 6.5 x86_64 or compatible so that:
+
+        1) we ship x86_64 version of epoll transport officially, and
+        2) we ensure the ABI compatibility with older GLIBC versions.
+
+           The shared library built on a distribution with newer GLIBC
+           will not run on older distributions.
+    -->
+    <profile>
+      <id>restricted-release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <artifactId>maven-enforcer-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>enforce-release-environment</id>
+                <goals>
+                  <goal>enforce</goal>
+                </goals>
+                <configuration>
+                  <rules>
+                    <requireProperty>
+                      <regexMessage>
+                        Release process must be performed on linux-x86_64.
+                      </regexMessage>
+                      <property>os.detected.classifier</property>
+                      <regex>^linux-x86_64$</regex>
+                    </requireProperty>
+                    <requireFilesContent>
+                      <message>
+                        Release process must be performed on RHEL 6.5 or its derivatives.
+                      </message>
+                      <files>
+                        <file>/etc/redhat-release</file>
+                      </files>
+                      <content>release 6.5</content>
+                    </requireFilesContent>
+                  </rules>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
   </profiles>
 
@@ -147,6 +195,7 @@
       -XX:+UseFastAccessorMethods
       -XX:+OptimizeStringConcat
       -XX:+HeapDumpOnOutOfMemoryError
+      -verbose:gc
     </test.jvm.argLine>
   </properties>
 
@@ -156,6 +205,7 @@
     <module>codec</module>
     <module>codec-dns</module>
     <module>codec-http</module>
+    <module>codec-http2</module>
     <module>codec-memcache</module>
     <module>codec-socks</module>
     <module>transport</module>
@@ -189,19 +239,44 @@
         <scope>compile</scope>
         <optional>true</optional>
       </dependency>
-    
+
       <!-- SPDY Example - completely optional -->
       <dependency>
         <groupId>org.eclipse.jetty.npn</groupId>
         <artifactId>npn-api</artifactId>
         <version>1.1.0.v20120525</version>
       </dependency>
-        
+
+      <!-- Google Protocol Buffers - completely optional -->
       <dependency>
         <groupId>com.google.protobuf</groupId>
         <artifactId>protobuf-java</artifactId>
         <version>2.5.0</version>
       </dependency>
+
+      <!-- Our own Tomcat Native fork - completely optional, used for acclerating SSL with OpenSSL. -->
+      <dependency>
+        <groupId>${project.groupId}</groupId>
+        <artifactId>netty-tcnative</artifactId>
+        <version>1.1.30.Fork1</version>
+        <classifier>${os.detected.classifier}</classifier>
+        <scope>compile</scope>
+        <optional>true</optional>
+      </dependency>
+
+      <!--
+        Bouncy Castle - completely optional, only needed when:
+        - you generate a temporary self-signed certificate using SelfSignedCertificate, and
+        - you don't use the JDK which doesn't provide sun.security.x509 package.
+      -->
+      <dependency>
+        <groupId>org.bouncycastle</groupId>
+        <artifactId>bcpkix-jdk15on</artifactId>
+        <version>1.50</version>
+        <scope>compile</scope>
+        <optional>true</optional>
+      </dependency>
+
       <dependency>
         <groupId>com.jcraft</groupId>
         <artifactId>jzlib</artifactId>
@@ -361,10 +436,17 @@
   </dependencies>
 
   <build>
+    <extensions>
+      <extension>
+        <groupId>kr.motd.maven</groupId>
+        <artifactId>os-maven-plugin</artifactId>
+        <version>1.2.2.Final</version>
+      </extension>
+    </extensions>
+
     <plugins>
       <plugin>
         <artifactId>maven-enforcer-plugin</artifactId>
-        <version>1.3</version>
         <executions>
           <execution>
             <id>enforce-tools</id>
@@ -434,16 +516,20 @@
             <ignore>java.nio.channels.DatagramChannel</ignore>
             <ignore>java.nio.channels.MembershipKey</ignore>
             <ignore>java.net.StandardProtocolFamily</ignore>
+            <ignore>java.nio.channels.spi.SelectorProvider</ignore>
 
-            <!-- Used for NIO. 2 -->
-            <ignore>java.nio.channels.AsynchronousChannel</ignore>
-            <ignore>java.nio.channels.AsynchronousSocketChannel</ignore>
-            <ignore>java.nio.channels.AsynchronousServerSocketChannel</ignore>
-            <ignore>java.nio.channels.AsynchronousChannelGroup</ignore>
-            <ignore>java.nio.channels.NetworkChannel</ignore>
-            <ignore>java.nio.channels.InterruptedByTimeoutException</ignore>
-            <ignore>java.net.StandardSocketOptions</ignore>
-            <ignore>java.net.SocketOption</ignore>
+            <!-- Self-signed certificate generation -->
+            <ignore>sun.security.x509.AlgorithmId</ignore>
+            <ignore>sun.security.x509.CertificateAlgorithmId</ignore>
+            <ignore>sun.security.x509.CertificateIssuerName</ignore>
+            <ignore>sun.security.x509.CertificateSerialNumber</ignore>
+            <ignore>sun.security.x509.CertificateSubjectName</ignore>
+            <ignore>sun.security.x509.CertificateValidity</ignore>
+            <ignore>sun.security.x509.CertificateVersion</ignore>
+            <ignore>sun.security.x509.CertificateX509Key</ignore>
+            <ignore>sun.security.x509.X500Name</ignore>
+            <ignore>sun.security.x509.X509CertInfo</ignore>
+            <ignore>sun.security.x509.X509CertImpl</ignore>
           </ignores>
         </configuration>
         <executions>
@@ -479,7 +565,7 @@
           <dependency>
             <groupId>${project.groupId}</groupId>
             <artifactId>netty-build</artifactId>
-            <version>19</version>
+            <version>20</version>
           </dependency>
         </dependencies>
       </plugin>
@@ -518,7 +604,7 @@
               <instructions>
                 <Export-Package>${project.groupId}.*</Export-Package>
                 <!-- enforce JVM vendor package as optional -->
-                <Import-Package>sun.misc.*;resolution:=optional,*</Import-Package>
+                <Import-Package>sun.misc.*;resolution:=optional,sun.nio.ch;resolution:=optional,*</Import-Package>
                 <!-- override "internal" private package convention -->
                 <Private-Package>!*</Private-Package>
               </instructions>
@@ -581,7 +667,7 @@
         <version>2.4.2</version>
         <configuration>
           <useReleaseProfile>false</useReleaseProfile>
-          <arguments>-P release,sonatype-oss-release,full,no-osgi,linux-native</arguments>
+          <arguments>-P restricted-release,sonatype-oss-release,full</arguments>
           <autoVersionSubmodules>true</autoVersionSubmodules>
           <allowTimestampedSnapshots>false</allowTimestampedSnapshots>
           <tagNameFormat>netty-@{project.version}</tagNameFormat>
@@ -737,6 +823,18 @@
 
     <pluginManagement>
       <plugins>
+        <plugin>
+          <artifactId>maven-enforcer-plugin</artifactId>
+          <version>1.3.1</version>
+          <dependencies>
+            <!-- Provides the 'requireFilesContent' enforcer rule. -->
+            <dependency>
+              <groupId>com.ceilfors.maven.plugin</groupId>
+              <artifactId>enforcer-rules</artifactId>
+              <version>1.1.0</version>
+            </dependency>
+          </dependencies>
+        </plugin>
         <!-- keep surefire and failsafe in sync -->
         <plugin>
           <artifactId>maven-surefire-plugin</artifactId>
@@ -812,6 +910,11 @@
           <groupId>org.codehaus.mojo</groupId>
           <artifactId>exec-maven-plugin</artifactId>
           <version>1.2.1</version>
+        </plugin>
+        <plugin>
+          <groupId>org.fusesource.hawtjni</groupId>
+          <artifactId>maven-hawtjni-plugin</artifactId>
+          <version>1.10</version>
         </plugin>
 
         <!-- Workaround for the 'M2E plugin execution not covered' problem.
@@ -892,6 +995,34 @@
                   </pluginExecutionFilter>
                   <action>
                     <ignore />
+                  </action>
+                </pluginExecution>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.fusesource.hawtjni</groupId>
+                    <artifactId>maven-hawtjni-plugin</artifactId>
+                    <versionRange>[1.10,)</versionRange>
+                    <goals>
+                      <goal>generate</goal>
+                      <goal>build</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <ignore></ignore>
+                  </action>
+                </pluginExecution>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <versionRange>[2.8,)</versionRange>
+                    <goals>
+                      <goal>properties</goal>
+                      <goal>copy</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <ignore></ignore>
                   </action>
                 </pluginExecution>
               </pluginExecutions>
