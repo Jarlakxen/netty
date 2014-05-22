@@ -37,6 +37,11 @@ import io.netty.handler.codec.dns.DnsResource;
 import io.netty.handler.codec.dns.DnsResponse;
 import io.netty.handler.codec.dns.DnsResponseCode;
 import io.netty.handler.codec.dns.DnsResponseDecoder;
+import io.netty.handler.codec.dns.cache.DnsCache;
+import io.netty.handler.codec.dns.cache.DnsCacheBuilder;
+import io.netty.handler.codec.dns.cache.DnsCacheKey;
+import io.netty.handler.codec.dns.cache.DnsCacheLoader;
+import io.netty.handler.codec.dns.cache.strategy.DnsNoCache;
 import io.netty.util.concurrent.Future;
 import io.netty.util.concurrent.Promise;
 import io.netty.util.internal.PlatformDependent;
@@ -71,27 +76,60 @@ public final class AsynchronousDnsResolver {
     private final AtomicInteger dnsServerIndex = new AtomicInteger();
     private final InetSocketAddress[] dnsServers;
     private final Channel channel;
+    private final DnsCache cache;
 
     /**
      * Constructs a new {@link AsynchronousDnsResolver}.
      *
-     * @param dnsServers
-     *            an array of DNS server addresses to use
+     * @param channelFactory
+     *            a channel factory
      * @param eventLoupGroup
      *            an {@link EventLoopGroup} to use for all DNS server {@link Channel} s.
+     * @param dnsServers
+     *            an array of DNS server addresses to use
      */
     public AsynchronousDnsResolver(ChannelFactory<DatagramChannel> channelFactory,
                                    EventLoopGroup eventLoupGroup, InetSocketAddress... dnsServers) {
-        this(createChannel(channelFactory, eventLoupGroup), dnsServers);
+        this(createChannel(channelFactory, eventLoupGroup), DnsNoCache.create(), dnsServers);
     }
 
-    public AsynchronousDnsResolver(DatagramChannel channel, InetSocketAddress... dnsServers) {
+    /**
+     * Constructs a new {@link AsynchronousDnsResolver}.
+     *
+     * @param channelFactory
+     *            a channel factory
+     * @param eventLoupGroup
+     *            an {@link EventLoopGroup} to use for all DNS server {@link Channel} s.
+     * @param cache
+     *            a cache implementation
+     * @param dnsServers
+     *            an array of DNS server addresses to use
+     */
+    public AsynchronousDnsResolver(ChannelFactory<DatagramChannel> channelFactory,
+                                   EventLoopGroup eventLoupGroup, DnsCacheBuilder cacheBuilder, InetSocketAddress... dnsServers) {
+        this(createChannel(channelFactory, eventLoupGroup), cacheBuilder, dnsServers);
+    }
+
+    public AsynchronousDnsResolver(final DatagramChannel channel, DnsCacheBuilder cacheBuilder, InetSocketAddress... dnsServers) {
         if (dnsServers == null || dnsServers.length == 0) {
             this.dnsServers = useSystemDefault();
         } else {
             this.dnsServers = dnsServers.clone();
         }
         this.channel = channel;
+        this.cache = cacheBuilder.build(new DnsCacheLoader() {
+			@Override
+			public Future<Object> load(DnsCacheKey key) {
+				InetSocketAddress dnsServerAddress = nextDnsServer();
+				final Promise<Object> promise = channel.eventLoop().newPromise();
+		        final ResolverDnsQuery<Object> query = new ResolverDnsQuery<Object>(nextId(), dnsServerAddress, key.single(), promise);
+		        for (int type: key.types()) {
+		            query.addQuestion(new DnsQuestion(key.domain(), type));
+		        }
+		        channel.writeAndFlush(query);
+		        return promise;
+			}
+		});
     }
 
     private static DatagramChannel createChannel(
@@ -165,14 +203,8 @@ public final class AsynchronousDnsResolver {
      * @return future
      *              {@link Future} that is notified once a response othe query was received or it failed
      */
-    private <T> Future<T> sendQuery(String domain, InetSocketAddress dnsServerAddress, boolean single, int... types) {
-        final Promise<T> promise = channel.eventLoop().newPromise();
-        final ResolverDnsQuery<T> query = new ResolverDnsQuery<T>(nextId(), dnsServerAddress, single, promise);
-        for (int type: types) {
-            query.addQuestion(new DnsQuestion(domain, type));
-        }
-        channel.writeAndFlush(query);
-        return promise;
+	private <T> Future<T> sendQuery(String domain, InetSocketAddress dnsServerAddress, boolean single, int... types) {
+    	return cache.get(new DnsCacheKey(domain, single, types));
     }
 
     /**

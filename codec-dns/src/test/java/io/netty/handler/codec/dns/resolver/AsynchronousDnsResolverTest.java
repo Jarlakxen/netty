@@ -15,6 +15,7 @@
  */
 package io.netty.handler.codec.dns.resolver;
 
+import static org.hamcrest.Matchers.*;
 import io.netty.bootstrap.ChannelFactory;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
@@ -22,9 +23,18 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.DatagramChannel;
 import io.netty.channel.socket.InternetProtocolFamily;
 import io.netty.channel.socket.nio.NioDatagramChannel;
+import io.netty.handler.codec.dns.DnsEntry;
 import io.netty.handler.codec.dns.DnsResponseCode;
 import io.netty.handler.codec.dns.DnsResponseException;
+import io.netty.handler.codec.dns.cache.DnsCache;
+import io.netty.handler.codec.dns.cache.DnsCacheBuilder;
+import io.netty.handler.codec.dns.cache.DnsCacheKey;
+import io.netty.handler.codec.dns.cache.DnsCacheLoader;
+import io.netty.handler.codec.dns.cache.strategy.DnsLruCache;
+import io.netty.handler.codec.dns.cache.strategy.DnsNoCache;
 import io.netty.util.NetUtil;
+import io.netty.util.concurrent.ImmediateEventExecutor;
+
 import org.apache.directory.server.dns.DnsServer;
 import org.apache.directory.server.dns.io.encoder.DnsMessageEncoder;
 import org.apache.directory.server.dns.io.encoder.ResourceRecordEncoder;
@@ -49,6 +59,8 @@ import org.apache.mina.filter.codec.ProtocolEncoder;
 import org.apache.mina.filter.codec.ProtocolEncoderOutput;
 import org.apache.mina.transport.socket.DatagramAcceptor;
 import org.apache.mina.transport.socket.DatagramSessionConfig;
+import org.jmock.Expectations;
+import org.jmock.Mockery;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -59,6 +71,7 @@ import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -113,6 +126,40 @@ public class AsynchronousDnsResolverTest {
         List<Inet4Address> addresses = dns.resolve4("netty.io").get();
         Assert.assertEquals(1, addresses.size());
         Assert.assertEquals(ip, addresses.get(0).getHostAddress());
+    }
+
+    @Test
+    public void testResolveAFromCache() throws Exception {
+    	Mockery context = new Mockery();
+
+        final DnsCacheBuilder cacheBuilder = context.mock(DnsCacheBuilder.class);
+        final DnsCache cache = context.mock(DnsCache.class);
+        final DnsCacheKey cacheKey = new DnsCacheKey("netty.io", false, DnsEntry.TYPE_A);
+
+        final List<InetAddress> preCachedAddress = Arrays.asList(InetAddress.getByAddress(new byte[]{10,0,0,2}));
+        context.checking(new Expectations() {{
+        	oneOf(cacheBuilder).build(with(any(DnsCacheLoader.class))); will(returnValue(cache));
+            oneOf(cache).get(cacheKey); will(returnValue(ImmediateEventExecutor.INSTANCE.newSucceededFuture(
+            		(Object)preCachedAddress)));
+        }});
+
+        AsynchronousDnsResolver dns = prepare(new TestDnsServer(new RecordStore() {
+            @Override
+            public Set<ResourceRecord> getRecords(QuestionRecord questionRecord) {
+                Set<ResourceRecord> set = new HashSet<ResourceRecord>();
+
+                ResourceRecordModifier rm = createModifier();
+                rm.setDnsType(RecordType.A);
+                rm.put(DnsAttribute.IP_ADDRESS, "10.0.0.1");
+                set.add(rm.getEntry());
+                return set;
+            }
+        }), cacheBuilder);
+
+        List<Inet4Address> addresses = dns.resolve4("netty.io").get();
+        context.assertIsSatisfied();
+        Assert.assertEquals(1, addresses.size());
+        Assert.assertEquals("10.0.0.2", addresses.get(0).getHostAddress());
     }
 
     @Test
@@ -352,10 +399,14 @@ public class AsynchronousDnsResolverTest {
     }
 
     private AsynchronousDnsResolver prepare(TestDnsServer server) throws Exception {
+        return prepare(server, DnsNoCache.create());
+    }
+
+    private AsynchronousDnsResolver prepare(TestDnsServer server, DnsCacheBuilder cacheBuilder) throws Exception {
         dnsServer = server;
         dnsServer.start();
         InetSocketAddress addr = (InetSocketAddress) dnsServer.getTransports()[0].getAcceptor().getLocalAddress();
-        return new AsynchronousDnsResolver(factory, group, addr);
+        return new AsynchronousDnsResolver(factory, group, cacheBuilder, addr);
     }
 
     private static ResourceRecordModifier createModifier() {
